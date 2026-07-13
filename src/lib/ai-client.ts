@@ -97,6 +97,15 @@ export const ScenarioEvaluationSchema = z.object({
   gaps: z.array(z.string()).optional(),
 });
 
+const safeYearSchema = z.preprocess((val) => {
+  if (val === null || val === undefined) return "";
+  if (typeof val === "object") {
+    const obj = val as any;
+    return String(obj.year || obj.date || obj.end || obj.start || JSON.stringify(obj));
+  }
+  return String(val);
+}, z.string());
+
 export const ResumeAnalysisSchema = z.object({
   skills: z.array(z.string()),
   experience: z.array(
@@ -118,17 +127,17 @@ export const ResumeAnalysisSchema = z.object({
     z.object({
       institution: z.string(),
       degree: z.string(),
-      year: z.coerce.string(),
+      year: safeYearSchema,
     })
   ),
   certifications: z.array(
     z.object({
       name: z.string(),
       provider: z.string(),
-      year: z.coerce.string(),
+      year: safeYearSchema,
     })
   ),
-  atsScore: z.number().min(0).max(100),
+  atsScore: z.coerce.number().min(0).max(100),
   feedback: z.string(),
   missingKeywords: z.array(z.string()),
 });
