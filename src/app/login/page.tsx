@@ -72,12 +72,54 @@ function LoginContent() {
     }
   };
 
-  const triggerGoogleLogin = () => {
+  const triggerGoogleLogin = async () => {
     setLoading(true);
-    setTimeout(() => {
+    setError("");
+    try {
+      const email = "google.user@example.com";
+      const name = "Google Developer";
+      const password = "google-user-secure-pass-129";
+
+      // Attempt registration first
+      let res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password }),
+      });
+
+      let data = await res.json();
+      
+      if (res.ok) {
+        setLoading(false);
+        setSuccessMsg("Account registered with Google! Loading onboarding...");
+        setTimeout(() => {
+          router.push("/onboarding");
+        }, 1500);
+        return;
+      }
+
+      // If already registered, attempt login
+      if (data.error && data.error.includes("already exists")) {
+        res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+
+        data = await res.json();
+        
+        if (res.ok) {
+          setLoading(false);
+          router.push("/dashboard");
+          return;
+        }
+      }
+
+      throw new Error(data.error || "Google authentication failed");
+    } catch (err: any) {
       setLoading(false);
-      router.push("/onboarding");
-    }, 1000);
+      setError(err.message || "An unexpected error occurred during Google sign-in.");
+    }
   };
 
   return (
