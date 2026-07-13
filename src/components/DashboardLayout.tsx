@@ -13,7 +13,7 @@ export default function DashboardLayout({
   noPadding?: boolean;
 }) {
   return (
-    <div className="min-h-screen bg-[#08080F] text-[#EEEEFF]">
+    <div className="min-h-screen bg-background text-foreground">
       {!hideSidebar && <Sidebar />}
       <div className={hideSidebar ? "pt-0 w-full" : "lg:pl-64 pt-16 lg:pt-0"}>
         <main className={`min-h-screen ${
