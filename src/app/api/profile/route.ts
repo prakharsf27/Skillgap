@@ -22,13 +22,14 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = decoded.userId;
-    const body = await request.json();
-    const { targetTrack, readinessScore } = body;
+    const { name, email, targetTrack, readinessScore } = await request.json();
 
     // Update user profile in DB
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
+        ...(name !== undefined && { name }),
+        ...(email !== undefined && { email }),
         ...(targetTrack !== undefined && { targetTrack }),
         ...(readinessScore !== undefined && { readinessScore: Number(readinessScore) }),
       },

@@ -1,44 +1,194 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Briefcase, ArrowRight, ShieldCheck, ChevronRight, Activity } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { GlassCard, GradientText, SectionLabel } from "@/components/shared";
 
 export default function JobReadiness() {
+  const router = useRouter();
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [certsScore, setCertsScore] = useState(0);
+  const [projectsScore, setProjectsScore] = useState(0);
+
+  useEffect(() => {
+    async function loadSession() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (!res.ok) {
+          router.push("/login");
+          return;
+        }
+        const data = await res.json();
+        setUser(data.user);
+      } catch (err) {
+        console.error("Session error:", err);
+        router.push("/login");
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadSession();
+  }, [router]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    if (typeof window !== "undefined") {
+      const savedCerts = localStorage.getItem("skillgap_certifications");
+      if (savedCerts) {
+        try {
+          const parsed = JSON.parse(savedCerts);
+          if (parsed.length) {
+            const avg = Math.round(
+              parsed.reduce((acc: number, cur: any) => acc + (cur.relevanceScore || 0), 0) / parsed.length
+            );
+            setCertsScore(avg);
+          }
+        } catch {}
+      }
+
+      const savedProjects = localStorage.getItem("skillgap_projects");
+      if (savedProjects) {
+        try {
+          const parsed = JSON.parse(savedProjects);
+          if (parsed.length) {
+            let totalScore = 0;
+            let count = 0;
+            parsed.forEach((p: any) => {
+              const rep = localStorage.getItem(`skillgap_project_report_${p.id}`);
+              if (rep) {
+                try {
+                  const parsedRep = JSON.parse(rep);
+                  totalScore += parsedRep.overallScore || 0;
+                  count++;
+                } catch {}
+              }
+            });
+            if (count > 0) {
+              setProjectsScore(Math.round(totalScore / count));
+            }
+          }
+        } catch {}
+      }
+    }
+  }, [user]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#08080F] flex items-center justify-center text-white">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-full border-4 border-indigo-500/30 border-t-indigo-500 animate-spin" />
+          <p className="text-white/60 text-sm">Evaluating job readiness match...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Calculate dimension metrics from DB
+  const dsaAssessments = user?.assessments?.filter((a: any) => a.category === "DSA") || [];
+  const scenarioAssessments = user?.assessments?.filter((a: any) => a.category === "Scenario") || [];
+  const latestResume = user?.resumes?.[0];
+
+  const dsaScore = dsaAssessments.length
+    ? Math.round(dsaAssessments.reduce((acc: number, cur: any) => acc + cur.score, 0) / dsaAssessments.length)
+    : 0;
+
+  const sysDesignScore = scenarioAssessments.length
+    ? Math.round(scenarioAssessments.reduce((acc: number, cur: any) => acc + cur.score, 0) / scenarioAssessments.length)
+    : 0;
+
+  const resumeScore = latestResume ? latestResume.atsScore : 0;
+
+  // Extract skills from resume
+  let userSkills: string[] = [];
+  if (latestResume) {
+    try {
+      const parsed = JSON.parse(latestResume.skills);
+      if (Array.isArray(parsed)) {
+        userSkills = parsed.map((s: string) => s.toLowerCase());
+      }
+    } catch {
+      if (typeof latestResume.skills === "string") {
+        userSkills = latestResume.skills.split(",").map((s: string) => s.trim().toLowerCase()).filter(Boolean);
+      }
+    }
+  }
+
+  // Dynamic skill matching logic
+  const checkSkills = (targetList: string[]) => {
+    // If no resume uploaded, all are missing
+    if (!latestResume) {
+      return { acquired: [], missing: targetList };
+    }
+    const acquired = targetList.filter(t => 
+      userSkills.some(us => us.includes(t.toLowerCase()) || t.toLowerCase().includes(us))
+    );
+    const missing = targetList.filter(t => !acquired.includes(t));
+    return { acquired, missing };
+  };
+
+  // Define developer profiles
+  const feSkills = checkSkills(["React", "TypeScript", "Tailwind CSS", "HTML", "CSS"]);
+  const beSkills = checkSkills(["Node.js", "SQL", "Git", "System Design", "Docker"]);
+  const fsSkills = checkSkills(["Next.js", "TypeScript", "SQL", "AWS", "CI/CD"]);
+  const aiSkills = checkSkills(["Python", "Algorithms", "PyTorch", "Model Ops", "Pandas"]);
+
+  // Calculate readiness match percentage based on dynamic test scores
+  const getMatchScore = (weightResume: number, weightSys: number, weightDsa: number) => {
+    const calculated = Math.round(
+      resumeScore * weightResume + sysDesignScore * weightSys + dsaScore * weightDsa
+    );
+    // If no evaluations taken, default to 0%
+    return calculated;
+  };
+
+  const getStatusText = (score: number) => {
+    if (score >= 75) return "Ready to Apply";
+    if (score >= 50) return "Needs Skill Bridging";
+    return "Critical Gaps";
+  };
+
+  const feScore = getMatchScore(0.6, 0.1, 0.3);
+  const beScore = getMatchScore(0.4, 0.3, 0.3);
+  const fsScore = getMatchScore(0.5, 0.2, 0.3);
+  const aiScore = getMatchScore(0.3, 0.2, 0.5);
+
   const roles = [
     {
       title: "Frontend Developer",
-      match: 82,
+      match: feScore,
       color: "#6366F1",
-      required: ["React", "TypeScript", "Tailwind CSS"],
-      missing: ["Testing", "Accessibility"],
-      status: "Ready to Apply",
+      required: feSkills.acquired.length ? feSkills.acquired : ["React", "HTML/CSS"],
+      missing: feSkills.missing,
+      status: getStatusText(feScore),
     },
     {
       title: "Backend Developer",
-      match: 74,
+      match: beScore,
       color: "#8B5CF6",
-      required: ["Node.js", "SQL", "Git"],
-      missing: ["System Design", "Docker"],
-      status: "Needs Skill Bridging",
+      required: beSkills.acquired.length ? beSkills.acquired : ["Node.js", "SQL"],
+      missing: beSkills.missing,
+      status: getStatusText(beScore),
     },
     {
       title: "Full Stack Developer",
-      match: 77,
+      match: fsScore,
       color: "#60A5FA",
-      required: ["Next.js", "TypeScript", "SQL"],
-      missing: ["AWS", "CI/CD"],
-      status: "Ready to Apply",
+      required: fsSkills.acquired.length ? fsSkills.acquired : ["Next.js", "JS/TS"],
+      missing: fsSkills.missing,
+      status: getStatusText(fsScore),
     },
     {
       title: "AI Engineer",
-      match: 55,
+      match: aiScore,
       color: "#F59E0B",
-      required: ["Python", "Algorithms"],
-      missing: ["PyTorch", "Model Ops"],
-      status: "Critical Gaps",
+      required: aiSkills.acquired.length ? aiSkills.acquired : ["Python", "Algorithms"],
+      missing: aiSkills.missing,
+      status: getStatusText(aiScore),
     },
   ];
 
@@ -119,11 +269,15 @@ export default function JobReadiness() {
                   <div>
                     <div className="text-white/30 uppercase text-[9px] tracking-wide mb-1.5">Missing Skills</div>
                     <div className="flex flex-wrap gap-1">
-                      {r.missing.map(s => (
-                        <span key={s} className="px-1.5 py-0.5 rounded border border-red-500/16 bg-red-500/8 text-red-300 text-[10px]">
-                          {s}
-                        </span>
-                      ))}
+                      {r.missing.length === 0 ? (
+                        <span className="text-[10px] text-white/30 italic">None</span>
+                      ) : (
+                        r.missing.map(s => (
+                          <span key={s} className="px-1.5 py-0.5 rounded border border-red-500/16 bg-red-500/8 text-red-300 text-[10px]">
+                            {s}
+                          </span>
+                        ))
+                      )}
                     </div>
                   </div>
                 </div>

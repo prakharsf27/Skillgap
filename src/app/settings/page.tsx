@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { 
   Settings, User, Lock, Bell, 
@@ -10,17 +10,46 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { GlassCard, GradientText } from "@/components/shared";
 
 export default function SettingsPage() {
-  const [name, setName] = useState("Rahul Sharma");
-  const [email, setEmail] = useState("rahul@alliance.edu.in");
-  const [college, setCollege] = useState("Alliance University");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [college, setCollege] = useState("");
   const [password, setPassword] = useState("••••••••");
   const [notif, setNotif] = useState(true);
   const [msg, setMsg] = useState("");
 
-  const handleSave = (e: React.FormEvent) => {
+  useEffect(() => {
+    async function loadSession() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const data = await res.json();
+          setName(data.user.name || "");
+          setEmail(data.user.email || "");
+          setCollege(""); // SQLite DB doesn't collect college, initialize to empty
+        }
+      } catch (err) {
+        console.error("Failed to load settings session:", err);
+      }
+    }
+    loadSession();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg("Settings saved successfully!");
-    setTimeout(() => setMsg(""), 2500);
+    setMsg("");
+    try {
+      const res = await fetch("/api/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update profile");
+      setMsg("Settings saved successfully!");
+      setTimeout(() => setMsg(""), 2500);
+    } catch (err: any) {
+      alert(err.message || "An error occurred while saving.");
+    }
   };
 
   return (
