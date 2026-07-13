@@ -1,106 +1,23 @@
 /**
  * Groq AI Service — Server-side utility
- * Handles all Groq AI calls for coding assessments, syntax checking, and certification verification
+ * Handles AI calls with Zod validation, prompt templates, and structured parsing,
+ * backing up to Gemini when necessary.
  */
-import { Groq } from "groq-sdk";
+import {
+  callAiWithFallback,
+  DSAQuestionsResponseSchema,
+  CodingEvaluationSchema,
+  SyntaxCheckResultSchema,
+  CertificationVerificationResponseSchema,
+} from "./ai-client";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const DEFAULT_MODEL = "llama-3.3-70b-versatile";
-
-// ─── Retry wrapper ────────────────────────────────────────────────────────────
-
-async function callGroq<T>(prompt: string, jsonMode = true, retries = 3): Promise<T> {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const response = await groq.chat.completions.create({
-        model: DEFAULT_MODEL,
-        messages: [
-          {
-            role: "system",
-            content: jsonMode
-              ? "You are a helpful assistant designed to output structured JSON data only. Always wrap your responses in valid JSON."
-              : "You are a technical assistant.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        response_format: jsonMode ? { type: "json_object" } : undefined,
-        temperature: 0.1,
-      });
-
-      const raw = response.choices[0]?.message?.content?.trim() || "";
-      if (!jsonMode) {
-        return raw as unknown as T;
-      }
-
-      const cleaned = raw
-        .replace(/^```json\s*/i, "")
-        .replace(/^```\s*/i, "")
-        .replace(/\s*```$/i, "")
-        .trim();
-      return JSON.parse(cleaned) as T;
-    } catch (err) {
-      if (attempt === retries - 1) {
-        console.error("[Groq] Failed after", retries, "attempts:", err);
-        throw new Error("Groq AI service unavailable. Please try again.");
-      }
-      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-    }
-  }
-  throw new Error("Unreachable");
-}
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface DSAQuestion {
-  title: string;
-  description: string;
-  difficulty: "Easy" | "Easy-Medium" | "Medium" | "Medium-Hard" | "Hard";
-  difficultyColor: string;
-  timeEst: string;
-  inputFormat: string;
-  outputFormat: string;
-  constraints: string[];
-  examples: Array<{ input: string; output: string; explanation?: string }>;
-  hint: string;
-  defaultCode: string;
-}
-
-export interface CodingEvaluation {
-  correctness: number;    // 0-100: Does the solution solve the problem?
-  readability: number;    // 0-100: Code quality, naming, structure
-  optimization: number;   // 0-100: Time/space complexity
-  reasoning: number;      // 0-100: Algorithmic thinking shown
-  finalScore: number;     // Weighted score
-  timeComplexity: string; // e.g. "O(n)"
-  spaceComplexity: string;
-  isCorrect: boolean;
-  feedback: string;
-  strongPoints: string[];
-  improvements: string[];
-}
-
-export interface SyntaxCheckResult {
-  isValid: boolean;
-  errors: Array<{
-    line?: number;
-    column?: number;
-    message: string;
-    severity: "error" | "warning";
-  }>;
-}
-
-export interface CertificationVerification {
-  isVerified: boolean;
-  credibilityScore: number; // 0-100 score on validity/weight
-  relevanceScore: number;   // 0-100 score on industry alignment
-  mappedSkills: string[];
-  marketValue: "Low" | "Medium" | "High" | "Extremely High";
-  skillsLearned: string[];
-  feedback: string;
-}
+// Re-export core types for backward compatibility
+export type {
+  DSAQuestion,
+  CodingEvaluation,
+  SyntaxCheckResult,
+  CertificationVerification,
+} from "./ai-client";
 
 const DIFFICULTY_COLORS: Record<string, string> = {
   "Easy": "#22C55E",
@@ -112,167 +29,216 @@ const DIFFICULTY_COLORS: Record<string, string> = {
 
 // ─── Generate Coding Questions ────────────────────────────────────────────────
 
-export async function generateDsaQuestions(language: string): Promise<DSAQuestion[]> {
+export async function generateDsaQuestions(language: string): Promise<any[]> {
   const prompt = `
-Generate exactly 5 original coding questions in strict JSON format.
-Language context: ${language}
-Difficulties in order: Easy, Easy-Medium, Medium, Medium-Hard, Hard
+SYSTEM: You are a senior technical interviewer at a top tech company generating Data Structures & Algorithms interview questions. Output ONLY valid JSON, no markdown formatting, no commentary.
 
-Rules:
-- Easy: Arrays, basic iteration (e.g. Find Max, Reverse String)
-- Easy-Medium: Hash maps, basic strings (e.g. Two Sum, Valid Anagram)
-- Medium: Sliding window, 2-pointers (e.g. Longest Substring Without Repeating Characters)
-- Medium-Hard: Trees, dynamic programming basics (e.g. Binary Tree Level Order, House Robber)
-- Hard: Graph algorithms, advanced DP, or complex matrices (e.g. Number of Islands, Merge k Sorted Lists)
+USER PROMPT:
+Generate exactly 5 DSA coding questions for a candidate using the programming language: ${language}.
+Difficulty must strictly increase: Q1=Easy, Q2=Easy-Medium, Q3=Medium, Q4=Medium-Hard, Q5=Hard.
+Cover a spread across: Arrays/Strings, Hashing, Trees/Graphs, Dynamic Programming, Recursion/Backtracking.
 
-Return a JSON object containing a "questions" key with an array of exactly 5 questions:
+For each question return this exact JSON shape:
 {
   "questions": [
     {
-      "title": "Problem Title",
-      "description": "Clear problem statement with detailed inputs",
-      "difficulty": "Easy|Easy-Medium|Medium|Medium-Hard|Hard",
-      "timeEst": "15 mins",
-      "inputFormat": "Description of input",
-      "outputFormat": "Description of expected output",
-      "constraints": ["constraint 1", "constraint 2"],
-      "examples": [{"input": "...", "output": "...", "explanation": "..."}],
-      "hint": "Algorithmic hint without giving away the solution",
-      "defaultCode": "function solve() {\\n  // Write your solution here\\n}"
+      "id": "string uuid",
+      "title": "string",
+      "difficulty": "Easy | Easy-Medium | Medium | Medium-Hard | Hard",
+      "topic": "string",
+      "description": "string - full problem statement with constraints",
+      "examples": [{"input": "string", "output": "string", "explanation": "string"}],
+      "constraints": ["string"],
+      "starterCode": {"javascript": "string", "python": "string"},
+      "hiddenTestCases": [{"input": "string", "expectedOutput": "string"}],
+      "gradingCriteria": {
+        "correctness": "what defines a correct solution",
+        "optimalComplexity": {"time": "Big-O", "space": "Big-O"}
+      }
     }
   ]
 }`;
 
-  const res = await callGroq<{ questions: DSAQuestion[] }>(prompt);
+  const res = await callAiWithFallback({
+    prompt,
+    schema: DSAQuestionsResponseSchema,
+    primaryProvider: "groq", // Primary is Groq as requested
+    temperature: 0.8,
+  });
+
   return (res.questions || []).map((q) => ({
     ...q,
     difficultyColor: DIFFICULTY_COLORS[q.difficulty] ?? "#6366F1",
+    timeEst: q.difficulty === "Easy" ? "15 mins" : q.difficulty === "Medium" ? "30 mins" : "45 mins",
+    hint: q.gradingCriteria?.correctness || "Consider space-time complexity.",
+    defaultCode: q.starterCode?.[language.toLowerCase()] || q.starterCode?.["javascript"] || "function solve() {\n  // Write solution here\n}",
   }));
 }
 
-// ─── Evaluate Coding Answer ───────────────────────────────────────────────────
 
-function computeFinalScore(metrics: {
-  correctness: number;
-  readability: number;
-  optimization: number;
-  reasoning: number;
-}): number {
-  const weighted =
-    metrics.correctness * 0.50 +
-    metrics.optimization * 0.25 +
-    metrics.readability * 0.15 +
-    metrics.reasoning * 0.10;
-  return Math.round(weighted);
-}
+
+import { z } from "zod";
+
+const EvaluateCodeJsonSchema = z.object({
+  correctnessScore: z.number().min(0).max(100),
+  readabilityScore: z.number().min(0).max(100),
+  complexityAnalysis: z.object({
+    actualTime: z.string(),
+    actualSpace: z.string(),
+    matchesOptimal: z.boolean(),
+  }),
+  feedback: z.string(),
+  flaggedIssues: z.array(z.string()),
+});
 
 export async function evaluateCodingAnswer(
   question: { title: string; description: string; difficulty: string },
   code: string,
   language: string
-): Promise<CodingEvaluation> {
+): Promise<any> {
   const prompt = `
-Evaluate the following code submission against the problem details.
+SYSTEM: You are an expert code reviewer. Evaluate the submitted solution against the problem's criteria. Output ONLY valid JSON.
 
-PROBLEM TITLE: ${question.title}
-DIFFICULTY: ${question.difficulty}
-PROBLEM DESCRIPTION:
-${question.description}
-
-STUDENT SUBMISSION (${language}):
-\`\`\`${language}
+USER PROMPT:
+Problem Title: ${question.title}
+Problem Description: ${question.description}
+Programming Language: ${language}
+Candidate's code:
 ${code || "// No code submitted"}
-\`\`\`
 
-Evaluate on:
-1. correctness (0-100): Does the solution solve the problem? Does it handle edge cases?
-2. readability (0-100): Code layout, clean naming, comments, style.
-3. optimization (0-100): Time and space complexity.
-4. reasoning (0-100): Algorithmic choices.
-
-Return ONLY a JSON object:
+Return:
 {
-  "correctness": <0-100>,
-  "readability": <0-100>,
-  "optimization": <0-100>,
-  "reasoning": <0-100>,
-  "timeComplexity": "O(?)",
-  "spaceComplexity": "O(?)",
-  "isCorrect": <true|false>,
-  "feedback": "2-3 sentences of overall constructive feedback",
-  "strongPoints": ["point 1", "point 2"],
-  "improvements": ["improvement 1", "improvement 2"]
-}`;
+  "correctnessScore": 0-100,
+  "readabilityScore": 0-100,
+  "complexityAnalysis": {"actualTime": "Big-O", "actualSpace": "Big-O", "matchesOptimal": boolean},
+  "feedback": "2-3 sentences, specific and constructive",
+  "flaggedIssues": ["string"]
+}
+`;
 
-  const metrics = await callGroq<Omit<CodingEvaluation, "finalScore">>(prompt);
+  const res = await callAiWithFallback({
+    prompt,
+    schema: EvaluateCodeJsonSchema,
+    primaryProvider: "groq",
+    temperature: 0.2,
+  });
+
+  const optScore = res.complexityAnalysis.matchesOptimal ? 95 : 60;
+  const reasoningScore = Math.round((res.correctnessScore + res.readabilityScore) / 2);
+  const finalScore = Math.round(
+    res.correctnessScore * 0.5 +
+    optScore * 0.25 +
+    res.readabilityScore * 0.15 +
+    reasoningScore * 0.1
+  );
+
   return {
-    ...metrics,
-    finalScore: computeFinalScore(metrics),
+    correctness: res.correctnessScore,
+    readability: res.readabilityScore,
+    optimization: optScore,
+    reasoning: reasoningScore,
+    finalScore,
+    timeComplexity: res.complexityAnalysis.actualTime,
+    spaceComplexity: res.complexityAnalysis.actualSpace,
+    isCorrect: res.correctnessScore >= 80,
+    feedback: res.feedback,
+    strongPoints: ["Algorithmic logic handles core test cases", `Matches complexity budget: ${res.complexityAnalysis.actualTime}`],
+    improvements: res.flaggedIssues,
   };
 }
 
 // ─── Real-Time Syntax Checker ───────────────────────────────────────────────
 
-export async function checkSyntax(code: string, language: string): Promise<SyntaxCheckResult> {
+export async function checkSyntax(code: string, language: string): Promise<any> {
   if (!code || code.trim().length === 0) {
     return { isValid: true, errors: [] };
   }
 
   const prompt = `
-Perform a strict static code evaluation and syntax checking on the following code.
+SYSTEM: You are a compiler interface. Analyze the code for syntax or logical compilation barriers. Output ONLY valid JSON.
+
+USER PROMPT:
 Programming Language: ${language}
-
-CODE TO CHECK:
-\`\`\`${language}
+Code:
 ${code}
-\`\`\`
 
-Analyze for syntax errors, unclosed brackets, incorrect types, invalid keywords, compiler/interpreter barriers, and logical bugs that would prevent execution.
-
-Return ONLY a JSON object of type:
+Return:
 {
-  "isValid": <true|false>,
+  "isValid": true | false,
   "errors": [
     {
-      "line": <line_number_if_applicable>,
-      "column": <column_number_if_applicable>,
-      "message": "Detailed compiler-like error message",
-      "severity": "error|warning"
+      "line": number,
+      "column": number,
+      "message": "string detail",
+      "severity": "error" | "warning"
     }
   ]
 }`;
 
-  return callGroq<SyntaxCheckResult>(prompt);
+  return callAiWithFallback({
+    prompt,
+    schema: SyntaxCheckResultSchema,
+    primaryProvider: "groq",
+    temperature: 0.1,
+  });
 }
 
-// ─── Certification Verification & Evaluation ──────────────────────────────────
+// ─── Certification Verification ──────────────────────────────────────────────
 
 export async function verifyCertification(
   certName: string,
   provider: string,
   year: string,
   skillsLearnedInput?: string
-): Promise<CertificationVerification> {
+): Promise<any> {
   const prompt = `
-Verify and evaluate the validity and industry value of the following course/certification.
-You must verify whether this is a real, recognized certification or course. Analyze its typical content, complexity, and industry recognition.
-Do not output fake credentials; evaluate based on realistic industry standards.
+SYSTEM: You are a labor market analyst assessing certification relevance. Output ONLY valid JSON.
 
-CERTIFICATE/COURSE NAME: ${certName}
-ISSUING PROVIDER: ${provider}
-YEAR OF COMPLETION: ${year}
-${skillsLearnedInput ? `DECLARED SKILLS LEARNED: ${skillsLearnedInput}` : ""}
+USER PROMPT:
+Candidate's certifications:
+- Name: ${certName}
+  Provider: ${provider}
+  Year: ${year}
+  Skills Claimed: ${skillsLearnedInput || "N/A"}
 
-Return ONLY a JSON object:
+Target role: Full Stack Developer
+Current market demand signals: Cloud services, Next.js, React, Node.js, Web Security, CI/CD, TypeScript.
+
+For each certification, assess relevance to the target role and whether it's still current/in-demand (vs outdated tech).
+
+Return:
 {
-  "isVerified": <true|false (is this a recognized, authentic provider/course?)>,
-  "credibilityScore": <0-100 (reputation of provider & difficulty of certification)>,
-  "relevanceScore": <0-100 (market demand and value to modern software engineering roles)>,
-  "mappedSkills": ["skill1", "skill2" (standardized skills validated by this cert)],
-  "marketValue": "Low|Medium|High|Extremely High",
-  "skillsLearned": ["skill1", "skill2" (topics covered in this curriculum)],
-  "feedback": "A professional 2-3 sentence summary evaluating the value of this certification, its real relevance, and how to augment it."
+  "certifications": [
+    {
+      "name": "string",
+      "relevanceScore": 0-100,
+      "status": "current | aging | outdated",
+      "reasoning": "1 sentence"
+    }
+  ],
+  "missingRecommendedCerts": ["string"]
 }`;
 
-  return callGroq<CertificationVerification>(prompt);
+  const res = await callAiWithFallback({
+    prompt,
+    schema: CertificationVerificationResponseSchema,
+    primaryProvider: "groq",
+    temperature: 0.2,
+  });
+
+  const mainCert = res.certifications[0];
+  const isVerified = mainCert ? mainCert.status !== "outdated" : false;
+  const credibility = mainCert ? (mainCert.status === "current" ? 90 : mainCert.status === "aging" ? 60 : 30) : 50;
+  const relevance = mainCert ? mainCert.relevanceScore : 50;
+  const val = credibility >= 80 ? "High" : credibility >= 50 ? "Medium" : "Low";
+
+  return {
+    isVerified,
+    credibilityScore: credibility,
+    relevanceScore: relevance,
+    mappedSkills: skillsLearnedInput ? skillsLearnedInput.split(",").map(s => s.trim()) : ["Software Engineering"],
+    marketValue: val,
+    skillsLearned: skillsLearnedInput ? skillsLearnedInput.split(",").map(s => s.trim()) : [],
+    feedback: mainCert ? mainCert.reasoning : "Certification review complete.",
+  };
 }

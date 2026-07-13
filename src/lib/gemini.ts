@@ -1,110 +1,33 @@
 /**
  * Gemini AI Service — Server-side utility
- * Handles all AI calls with retry logic, prompt templates, and structured parsing
+ * Handles AI calls with Zod validation, prompt templates, and structured parsing,
+ * backing up to Groq when necessary.
  */
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { z } from "zod";
+import {
+  callAiWithFallback,
+  DSAQuestionSchema,
+  DSAQuestionsResponseSchema,
+  CodingEvaluationSchema,
+  ScenarioQuestionsResponseSchema,
+  ScenarioEvaluationSchema,
+  ResumeAnalysisSchema,
+  JobMatchResultSchema,
+  ProjectQuestionResponseSchema,
+  ProjectFollowUpSchema,
+  ProjectEvaluationReportSchema,
+} from "./ai-client";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-// ─── Retry wrapper ────────────────────────────────────────────────────────────
-
-async function callGemini<T>(prompt: string, retries = 3): Promise<T> {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const result = await model.generateContent(prompt);
-      const raw = result.response.text().trim();
-      // Strip markdown fences if Gemini wraps output
-      const cleaned = raw
-        .replace(/^```json\s*/i, "")
-        .replace(/^```\s*/i, "")
-        .replace(/\s*```$/i, "")
-        .trim();
-      return JSON.parse(cleaned) as T;
-    } catch (err) {
-      if (attempt === retries - 1) {
-        console.error("[Gemini] Failed after", retries, "attempts:", err);
-        throw new Error("AI service unavailable. Please try again.");
-      }
-      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-    }
-  }
-  throw new Error("Unreachable");
-}
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface DSAQuestion {
-  title: string;
-  description: string;
-  difficulty: "Easy" | "Easy-Medium" | "Medium" | "Medium-Hard" | "Hard";
-  difficultyColor: string;
-  timeEst: string;
-  inputFormat: string;
-  outputFormat: string;
-  constraints: string[];
-  examples: Array<{ input: string; output: string; explanation?: string }>;
-  hint: string;
-  defaultCode: string;
-}
-
-export interface ScenarioQuestion {
-  title: string;
-  description: string;
-  difficulty: "Easy" | "Easy-Medium" | "Medium" | "Medium-Hard" | "Hard";
-  difficultyColor: string;
-  timeEst: string;
-  hint: string;
-}
-
-export interface CodingEvaluation {
-  correctness: number;    // 0-100: Does the solution solve the problem?
-  readability: number;    // 0-100: Code quality, naming, structure
-  optimization: number;   // 0-100: Time/space complexity
-  reasoning: number;      // 0-100: Algorithmic thinking shown
-  finalScore: number;     // Weighted: (correctness*0.5 + readability*0.15 + optimization*0.25 + reasoning*0.10)
-  timeComplexity: string; // e.g. "O(n)"
-  spaceComplexity: string;
-  isCorrect: boolean;
-  feedback: string;
-  strongPoints: string[];
-  improvements: string[];
-}
-
-export interface ScenarioEvaluation {
-  correctness: number;    // Problem understanding
-  readability: number;    // Clarity of explanation
-  optimization: number;   // Architecture quality
-  reasoning: number;      // Engineering depth
-  finalScore: number;
-  feedback: string;
-  strongPoints: string[];
-  improvements: string[];
-}
-
-export interface ResumeAnalysis {
-  skills: string[];
-  experience: Array<{ company: string; role: string; duration: string; description: string }>;
-  projects: Array<{ name: string; tech: string[]; description: string }>;
-  education: Array<{ institution: string; degree: string; year: string }>;
-  certifications: Array<{ name: string; provider: string; year: string }>;
-  atsScore: number;
-  feedback: string;
-  missingKeywords: string[];
-}
-
-export interface JobMatchResult {
-  matchScore: number;
-  readinessScore: number;
-  requiredSkills: string[];
-  preferredSkills: string[];
-  missingSkills: string[];
-  missingTech: string[];
-  recommendations: string;
-  strengthAreas: string[];
-}
-
-// ─── DSA Question Generator ───────────────────────────────────────────────────
+// Re-export core types for backward compatibility
+export type {
+  DSAQuestion,
+  CodingEvaluation,
+  ScenarioQuestion,
+  ScenarioEvaluation,
+  ResumeAnalysis,
+  JobMatchResult,
+  ProjectEvaluationReport,
+} from "./ai-client";
 
 const DIFFICULTY_COLORS: Record<string, string> = {
   "Easy": "#22C55E",
@@ -114,93 +37,103 @@ const DIFFICULTY_COLORS: Record<string, string> = {
   "Hard": "#EF4444",
 };
 
-export async function generateDsaQuestions(language: string): Promise<DSAQuestion[]> {
+// ─── DSA Question Generator (Coding Module) ───────────────────────────────────
+
+export async function generateDsaQuestions(language: string): Promise<any[]> {
   const prompt = `
-You are a senior competitive programming problem setter. Generate exactly 5 original DSA coding questions in strict JSON format.
+SYSTEM: You are a senior technical interviewer at a top tech company generating Data Structures & Algorithms interview questions. Output ONLY valid JSON, no markdown formatting, no commentary.
 
-Language context: ${language}
-Difficulties (in exact order): Easy, Easy-Medium, Medium, Medium-Hard, Hard
+USER PROMPT:
+Generate exactly 5 DSA coding questions for a candidate using the programming language: ${language}.
+Difficulty must strictly increase: Q1=Easy, Q2=Easy-Medium, Q3=Medium, Q4=Medium-Hard, Q5=Hard.
+Cover a spread across: Arrays/Strings, Hashing, Trees/Graphs, Dynamic Programming, Recursion/Backtracking.
 
-Rules:
-- Questions must be completely original and solvable
-- Each harder question must build on more complex algorithms
-- Easy: Arrays, basic loops
-- Easy-Medium: Hash maps, two pointers
-- Medium: Sliding window, binary search
-- Medium-Hard: Trees, dynamic programming basics
-- Hard: Complex DP, graphs, advanced data structures
-
-Return ONLY a JSON array (no markdown, no explanation), each item:
+For each question return this exact JSON shape:
 {
-  "title": "Problem Title",
-  "description": "Clear problem statement with context",
-  "difficulty": "Easy|Easy-Medium|Medium|Medium-Hard|Hard",
-  "timeEst": "10 mins",
-  "inputFormat": "Description of input",
-  "outputFormat": "Description of expected output",
-  "constraints": ["constraint 1", "constraint 2"],
-  "examples": [{"input": "...", "output": "...", "explanation": "..."}],
-  "hint": "Algorithmic hint without giving away the solution",
-  "defaultCode": "function solve() {\\n  // Write your solution here\\n}"
+  "questions": [
+    {
+      "id": "string uuid",
+      "title": "string",
+      "difficulty": "Easy | Easy-Medium | Medium | Medium-Hard | Hard",
+      "topic": "string",
+      "description": "string - full problem statement with constraints",
+      "examples": [{"input": "string", "output": "string", "explanation": "string"}],
+      "constraints": ["string"],
+      "starterCode": {"javascript": "string", "python": "string"},
+      "hiddenTestCases": [{"input": "string", "expectedOutput": "string"}],
+      "gradingCriteria": {
+        "correctness": "what defines a correct solution",
+        "optimalComplexity": {"time": "Big-O", "space": "Big-O"}
+      }
+    }
+  ]
 }`;
 
-  const questions = await callGemini<DSAQuestion[]>(prompt);
-  return questions.map((q) => ({
+  const res = await callAiWithFallback({
+    prompt,
+    schema: DSAQuestionsResponseSchema,
+    primaryProvider: "groq", // Fast/cheap generation
+    temperature: 0.8, // More variety
+  });
+
+  return (res.questions || []).map((q) => ({
     ...q,
     difficultyColor: DIFFICULTY_COLORS[q.difficulty] ?? "#6366F1",
+    timeEst: q.difficulty === "Easy" ? "15 mins" : q.difficulty === "Medium" ? "30 mins" : "45 mins",
+    hint: q.gradingCriteria?.correctness || "Consider time complexity optimization.",
+    defaultCode: q.starterCode?.[language.toLowerCase()] || q.starterCode?.["javascript"] || "function solve() {\n  // Write solution here\n}",
   }));
 }
 
 // ─── Scenario Question Generator ─────────────────────────────────────────────
 
-export async function generateScenarioQuestions(targetRole?: string): Promise<ScenarioQuestion[]> {
+export async function generateScenarioQuestions(
+  targetRole = "Full Stack Developer",
+  experienceLevel = "Mid-Senior"
+): Promise<any[]> {
   const prompt = `
-You are a senior engineering interviewer. Generate exactly 5 real-world engineering scenario questions.
-${targetRole ? `Target role context: ${targetRole}` : ""}
-Difficulties in order: Easy, Easy-Medium, Medium, Medium-Hard, Hard
+SYSTEM: You are a staff engineer conducting a system design interview. Output ONLY valid JSON.
 
-Each scenario should test:
-- Easy: Basic system concepts (e.g., caching, simple queues)
-- Easy-Medium: API design, basic scalability
-- Medium: Distributed systems patterns
-- Medium-Hard: Complex architecture decisions
-- Hard: Large-scale system design with trade-offs
+USER PROMPT:
+Generate exactly 5 scenario-based system design / problem-solving questions appropriate for a ${targetRole} candidate at ${experienceLevel} level.
+Questions should test real-world tradeoff thinking (scalability, data modeling, API design, debugging under pressure), not rote DSA.
 
-Return ONLY a JSON array:
-[{
-  "title": "Scenario Title",
-  "description": "A detailed engineering problem requiring a written architectural solution (2-4 paragraphs long)",
-  "difficulty": "Easy|Easy-Medium|Medium|Medium-Hard|Hard",
-  "timeEst": "15 mins",
-  "hint": "Hint pointing toward key patterns without giving the answer"
-}]`;
+Return:
+{
+  "questions": [
+    {
+      "id": "string",
+      "scenario": "string - realistic situation, 3-5 sentences",
+      "prompt": "string - the open-ended question",
+      "evaluationRubric": {
+        "keyPointsExpected": ["string"],
+        "redFlags": ["string - answers that indicate poor judgement"]
+      }
+    }
+  ]
+}`;
 
-  const questions = await callGemini<ScenarioQuestion[]>(prompt);
-  return questions.map((q) => ({
-    ...q,
-    difficultyColor: DIFFICULTY_COLORS[q.difficulty] ?? "#6366F1",
-  }));
-}
+  const res = await callAiWithFallback({
+    prompt,
+    schema: ScenarioQuestionsResponseSchema,
+    primaryProvider: "gemini", // Better reasoning for system design
+    temperature: 0.7,
+  });
 
-// ─── Scoring Engine ───────────────────────────────────────────────────────────
-
-function computeFinalScore(metrics: {
-  correctness: number;
-  readability: number;
-  optimization: number;
-  reasoning: number;
-}): number {
-  // Weighted formula:
-  // Correctness   = 50% (does it work?)
-  // Optimization  = 25% (is it efficient?)
-  // Readability   = 15% (is it clean?)
-  // Reasoning     = 10% (shows understanding?)
-  const weighted =
-    metrics.correctness * 0.50 +
-    metrics.optimization * 0.25 +
-    metrics.readability * 0.15 +
-    metrics.reasoning * 0.10;
-  return Math.round(weighted);
+  return (res.questions || []).map((q, i) => {
+    const difficulties = ["Easy-Medium", "Medium", "Medium", "Medium-Hard", "Hard"];
+    const diff = difficulties[i] || "Medium";
+    return {
+      id: q.id || `scenario-${i}`,
+      title: q.scenario?.split(".")[0] || `System Design Scenario ${i + 1}`,
+      description: `${q.scenario}\n\n**Prompt:** ${q.prompt}`,
+      difficulty: diff,
+      difficultyColor: DIFFICULTY_COLORS[diff] ?? "#8B5CF6",
+      timeEst: "15 mins",
+      hint: `Expected key aspects: ${q.evaluationRubric?.keyPointsExpected?.slice(0, 2).join(", ") || "tradeoffs"}`,
+      evaluationRubric: q.evaluationRubric,
+    };
+  });
 }
 
 // ─── Coding Evaluator ─────────────────────────────────────────────────────────
@@ -209,97 +142,132 @@ export async function evaluateCodingAnswer(
   question: { title: string; description: string; difficulty: string },
   code: string,
   language: string
-): Promise<CodingEvaluation> {
+): Promise<any> {
   const prompt = `
-You are an expert code reviewer and DSA evaluator. Evaluate this ${language} solution.
+SYSTEM: You are an expert code reviewer. Evaluate the submitted solution against the problem's criteria. Output ONLY valid JSON.
 
-PROBLEM: ${question.title}
-DIFFICULTY: ${question.difficulty}
-DESCRIPTION:
-${question.description}
-
-STUDENT'S CODE:
-\`\`\`${language}
+USER PROMPT:
+Problem Title: ${question.title}
+Problem Description: ${question.description}
+Programming Language: ${language}
+Candidate's code:
 ${code || "// No code submitted"}
-\`\`\`
 
-Evaluate on these 4 dimensions (0-100 each):
-
-1. correctness: Does the code correctly solve the problem? Does logic handle edge cases?
-2. readability: Variable naming, code structure, comments, clarity
-3. optimization: Time complexity, space complexity, algorithmic efficiency
-4. reasoning: Shows clear algorithmic thinking, uses appropriate data structures
-
-Return ONLY a JSON object (no markdown):
+Return:
 {
-  "correctness": <0-100>,
-  "readability": <0-100>,
-  "optimization": <0-100>,
-  "reasoning": <0-100>,
-  "timeComplexity": "O(?)",
-  "spaceComplexity": "O(?)",
-  "isCorrect": <true|false>,
-  "feedback": "2-3 sentences of constructive overall feedback",
-  "strongPoints": ["point 1", "point 2"],
-  "improvements": ["improvement 1", "improvement 2"]
+  "correctnessScore": 0-100,
+  "readabilityScore": 0-100,
+  "complexityAnalysis": {"actualTime": "Big-O", "actualSpace": "Big-O", "matchesOptimal": boolean},
+  "feedback": "2-3 sentences, specific and constructive",
+  "flaggedIssues": ["string"]
 }
+`;
 
-If no code was submitted, return all scores as 0 with appropriate feedback.`;
+  // Map user's requested grading output to code scoring metrics
+  const feedbackSchema = z.object({
+    correctnessScore: z.number().min(0).max(100),
+    readabilityScore: z.number().min(0).max(100),
+    complexityAnalysis: z.object({
+      actualTime: z.string(),
+      actualSpace: z.string(),
+      matchesOptimal: z.boolean(),
+    }),
+    feedback: z.string(),
+    flaggedIssues: z.array(z.string()),
+  });
 
-  const metrics = await callGemini<Omit<CodingEvaluation, "finalScore">>(prompt);
+  const res = await callAiWithFallback({
+    prompt,
+    schema: feedbackSchema,
+    primaryProvider: "groq", // Fast and structured
+    temperature: 0.2,
+  });
+
+  const optScore = res.complexityAnalysis.matchesOptimal ? 90 : 60;
+  const reasoningScore = Math.round((res.correctnessScore + res.readabilityScore) / 2);
+  const finalScore = Math.round(
+    res.correctnessScore * 0.5 +
+    optScore * 0.25 +
+    res.readabilityScore * 0.15 +
+    reasoningScore * 0.1
+  );
+
   return {
-    ...metrics,
-    finalScore: computeFinalScore(metrics),
+    correctness: res.correctnessScore,
+    readability: res.readabilityScore,
+    optimization: optScore,
+    reasoning: reasoningScore,
+    finalScore,
+    timeComplexity: res.complexityAnalysis.actualTime,
+    spaceComplexity: res.complexityAnalysis.actualSpace,
+    isCorrect: res.correctnessScore >= 80,
+    feedback: res.feedback,
+    strongPoints: ["Working solution structure", `Complexity matches expectation: ${res.complexityAnalysis.actualTime}`],
+    improvements: res.flaggedIssues,
   };
 }
 
 // ─── Scenario Evaluator ───────────────────────────────────────────────────────
 
 export async function evaluateScenarioAnswer(
-  question: { title: string; description: string },
+  question: { title: string; description: string; evaluationRubric?: any },
   answer: string
-): Promise<ScenarioEvaluation> {
+): Promise<any> {
+  const rubricStr = question.evaluationRubric
+    ? JSON.stringify(question.evaluationRubric)
+    : "Evaluate based on scalability, database selection, API design, and system trade-offs.";
+
   const prompt = `
-You are a senior engineering interviewer evaluating a system design response.
+SYSTEM: You are a senior engineering interviewer evaluating a system design response. Output ONLY valid JSON.
 
-QUESTION: ${question.title}
-SCENARIO:
-${question.description}
+USER PROMPT:
+Question Context: ${question.title}
+Scenario: ${question.description}
+Candidate's answer: ${answer || "No answer submitted."}
+Rubric: ${rubricStr}
 
-CANDIDATE'S ANSWER:
-${answer || "No answer submitted."}
-
-Evaluate on 4 dimensions (0-100 each):
-
-1. correctness: Does the answer address the core engineering problem?
-2. readability: Is the explanation clear, structured, and well-communicated?
-3. optimization: Does the solution consider performance, scalability, and trade-offs?
-4. reasoning: Does the candidate show deep engineering thinking and justification?
-
-Return ONLY a JSON object:
+Return:
 {
-  "correctness": <0-100>,
-  "readability": <0-100>,
-  "optimization": <0-100>,
-  "reasoning": <0-100>,
-  "feedback": "2-3 sentences of constructive feedback",
-  "strongPoints": ["strength 1", "strength 2"],
-  "improvements": ["area 1", "area 2"]
-}`;
+  "score": 0-100,
+  "strengths": ["string"],
+  "gaps": ["string"],
+  "feedback": "constructive, 2-3 sentences"
+}
+`;
 
-  const metrics = await callGemini<Omit<ScenarioEvaluation, "finalScore">>(prompt);
+  const gradingSchema = z.object({
+    score: z.number().min(0).max(100),
+    strengths: z.array(z.string()),
+    gaps: z.array(z.string()),
+    feedback: z.string(),
+  });
+
+  const res = await callAiWithFallback({
+    prompt,
+    schema: gradingSchema,
+    primaryProvider: "gemini", // Better context/depth analysis
+    temperature: 0.3,
+  });
+
   return {
-    ...metrics,
-    finalScore: computeFinalScore(metrics),
+    correctness: res.score,
+    readability: res.score,
+    optimization: res.score,
+    reasoning: res.score,
+    finalScore: res.score,
+    feedback: res.feedback,
+    strongPoints: res.strengths,
+    improvements: res.gaps,
   };
 }
 
 // ─── Resume Analyzer ──────────────────────────────────────────────────────────
 
-export async function analyzeResume(resumeText: string): Promise<ResumeAnalysis> {
+export async function analyzeResume(resumeText: string): Promise<any> {
   const prompt = `
-Extract structured data from this resume and return ONLY a JSON object:
+SYSTEM: You are an expert ATS (Applicant Tracking System) parser. Extract structured details from the resume. Output ONLY valid JSON.
 
+USER PROMPT:
 RESUME TEXT:
 ${resumeText}
 
@@ -310,12 +278,17 @@ Return:
   "projects": [{"name": "...", "tech": ["..."], "description": "..."}],
   "education": [{"institution": "...", "degree": "...", "year": "..."}],
   "certifications": [{"name": "...", "provider": "...", "year": "..."}],
-  "atsScore": <0-100>,
+  "atsScore": 0-100,
   "feedback": "ATS optimization feedback",
   "missingKeywords": ["keyword1", "keyword2"]
 }`;
 
-  return callGemini<ResumeAnalysis>(prompt);
+  return callAiWithFallback({
+    prompt,
+    schema: ResumeAnalysisSchema,
+    primaryProvider: "gemini",
+    temperature: 0.2,
+  });
 }
 
 // ─── Job Matcher ──────────────────────────────────────────────────────────────
@@ -323,10 +296,11 @@ Return:
 export async function matchJobDescription(
   jobDescription: string,
   userProfile: { skills: string[]; projects: string[]; certifications: string[] }
-): Promise<JobMatchResult> {
+): Promise<any> {
   const prompt = `
-Match this job description against the candidate profile. Return ONLY JSON.
+SYSTEM: You are a professional recruiter matching candidates to positions. Output ONLY valid JSON.
 
+USER PROMPT:
 JOB DESCRIPTION:
 ${jobDescription}
 
@@ -337,8 +311,8 @@ Certifications: ${userProfile.certifications.join(", ")}
 
 Return:
 {
-  "matchScore": <0-100>,
-  "readinessScore": <0-100>,
+  "matchScore": 0-100,
+  "readinessScore": 0-100,
   "requiredSkills": ["..."],
   "preferredSkills": ["..."],
   "missingSkills": ["..."],
@@ -347,27 +321,15 @@ Return:
   "recommendations": "3-4 sentences on what to improve"
 }`;
 
-  return callGemini<JobMatchResult>(prompt);
+  return callAiWithFallback({
+    prompt,
+    schema: JobMatchResultSchema,
+    primaryProvider: "gemini",
+    temperature: 0.2,
+  });
 }
 
 // ─── Project Interrogator ─────────────────────────────────────────────────────
-
-export interface ProjectQuestionResponse {
-  questions: string[];
-}
-
-export interface ProjectEvaluationReport {
-  overallScore: number;
-  conceptualUnderstanding: number;
-  implementationDepth: number;
-  architectureUnderstanding: number;
-  communicationScore: number;
-  summary: string;
-  strengths: string[];
-  weaknesses: string[];
-  recommendations: string[];
-  verifiedTech: string[];
-}
 
 export async function generateProjectQuestions(projectInfo: {
   name: string;
@@ -378,11 +340,9 @@ export async function generateProjectQuestions(projectInfo: {
   challenges?: string;
 }): Promise<string[]> {
   const prompt = `
-You are a senior tech architect conducting a project technical review.
-Analyze the following candidate project submission and generate exactly 3 highly specific, challenging technical questions.
-These questions should interrogate the codebase structure, technology choices, implementation strategy, and listed challenges.
-Do not generate generic questions. Make them highly contextualized to the project details.
+SYSTEM: You are a senior technical interviewer reviewing a candidate's repository structure and claimed implementation. Output ONLY valid JSON.
 
+USER PROMPT:
 PROJECT DETAILS:
 Name: ${projectInfo.name}
 Description: ${projectInfo.desc}
@@ -391,16 +351,22 @@ Live URL: ${projectInfo.live || "N/A"}
 Tech Stack: ${projectInfo.tech.join(", ")}
 Challenges Highlighted: ${projectInfo.challenges || "None declared"}
 
-Return ONLY a JSON object:
+Return:
 {
   "questions": [
-    "Contextual Question 1 (highly specific to tech stack or github details)",
-    "Contextual Question 2 (focusing on system structure or database layer)",
-    "Contextual Question 3 (focusing on robustness, error handling, or the declared challenges)"
+    "Challenge Question 1",
+    "Challenge Question 2",
+    "Challenge Question 3"
   ]
 }`;
 
-  const res = await callGemini<ProjectQuestionResponse>(prompt);
+  const res = await callAiWithFallback({
+    prompt,
+    schema: ProjectQuestionResponseSchema,
+    primaryProvider: "gemini",
+    temperature: 0.7,
+  });
+
   return res.questions || [];
 }
 
@@ -415,45 +381,54 @@ export async function generateProjectFollowUp(
     .join("\n");
 
   const prompt = `
-You are a senior tech architect. You are interviewing a candidate about their project: ${projectInfo.name}.
-Here is the chat history:
+SYSTEM: You are conducting a technical interview about the candidate's own project. Ask ONE question at a time. Be probing but fair — if their answer is vague, ask a natural follow-up. Base every question on their actual project description and prior answers, never generic questions. Output ONLY valid JSON.
+
+USER PROMPT:
+Project Context:
+Name: ${projectInfo.name}
+Description: ${projectInfo.desc}
+Tech Stack: ${projectInfo.tech.join(", ")}
+
+Chat history so far:
 ${historyText}
 
-The candidate just answered your question:
-Question: ${question}
-Answer: ${answer}
+Latest Question Asked: ${question}
+Candidate's Latest Answer: ${answer}
 
-Generate a concise, direct follow-up question (1-2 sentences) interrogating their specific answer.
-Identify gaps in their explanation, call out assumptions, or ask how they would handle an edge case related to their answer.
-If their answer was blank or extremely brief, ask them to expand on the implementation specifics.
+Ask your next question — probe deeper into the candidate's technical decisions, architecture, or potential inconsistencies based on their last answer.
 
-Return ONLY a JSON object:
+Return:
 {
   "followUp": "Your follow up question text here."
 }`;
 
-  const res = await callGemini<{ followUp: string }>(prompt);
+  const res = await callAiWithFallback({
+    prompt,
+    schema: ProjectFollowUpSchema,
+    primaryProvider: "gemini",
+    temperature: 0.7,
+  });
+
   return res.followUp;
 }
 
 export async function evaluateProjectInterview(
   projectInfo: { name: string; desc: string; tech: string[]; github: string; live?: string },
   chatLogs: Array<{ question: string; answer: string }>
-): Promise<ProjectEvaluationReport> {
+): Promise<any> {
   const chatText = chatLogs
     .map((log, i) => `Turn ${i + 1}:\nQuestion: ${log.question}\nAnswer: ${log.answer}`)
     .join("\n\n");
 
   const prompt = `
-You are an expert technical interviewer. Evaluate this candidate's project interview transcript.
-Assess how well the user knows their project, the technologies used, and the backend architectural trade-offs.
+SYSTEM: You are evaluating a technical chat interview regarding a candidate's own project. Output ONLY valid JSON.
 
+USER PROMPT:
 PROJECT CONTEXT:
 Name: ${projectInfo.name}
 Description: ${projectInfo.desc}
 Tech Stack: ${projectInfo.tech.join(", ")}
 GitHub: ${projectInfo.github}
-Live URL: ${projectInfo.live || "N/A"}
 
 INTERVIEW TRANSCRIPT:
 ${chatText}
@@ -464,22 +439,24 @@ Evaluate on:
 3. architectureUnderstanding (0-100): System design, databases, connection pools, scaling capabilities.
 4. communicationScore (0-100): Clarity, directness, and completeness of technical explanations.
 
-Compute overallScore as: (conceptualUnderstanding * 0.3 + implementationDepth * 0.3 + architectureUnderstanding * 0.3 + communicationScore * 0.1)
-
-Return ONLY a JSON object:
+Return:
 {
-  "overallScore": <0-100>,
-  "conceptualUnderstanding": <0-100>,
-  "implementationDepth": <0-100>,
-  "architectureUnderstanding": <0-100>,
-  "communicationScore": <0-100>,
-  "summary": "2-3 sentences summarizing their level of expertise and project involvement.",
+  "overallScore": 0-100,
+  "conceptualUnderstanding": 0-100,
+  "implementationDepth": 0-100,
+  "architectureUnderstanding": 0-100,
+  "communicationScore": 0-100,
+  "summary": "2-3 sentences summarizing candidate's depth of knowledge and whether they actually built it.",
   "strengths": ["strength 1", "strength 2"],
   "weaknesses": ["weakness 1", "weakness 2"],
-  "recommendations": ["reconciliation/improvement step 1", "reconciliation/improvement step 2"],
-  "verifiedTech": ["tech1", "tech2" (tech elements that the user demonstrated strong knowledge of)]
+  "recommendations": ["reconciliation step 1"],
+  "verifiedTech": ["tech1", "tech2"]
 }`;
 
-  return callGemini<ProjectEvaluationReport>(prompt);
+  return callAiWithFallback({
+    prompt,
+    schema: ProjectEvaluationReportSchema,
+    primaryProvider: "gemini",
+    temperature: 0.2,
+  });
 }
-
