@@ -118,14 +118,14 @@ export const ResumeAnalysisSchema = z.object({
     z.object({
       institution: z.string(),
       degree: z.string(),
-      year: z.string(),
+      year: z.coerce.string(),
     })
   ),
   certifications: z.array(
     z.object({
       name: z.string(),
       provider: z.string(),
-      year: z.string(),
+      year: z.coerce.string(),
     })
   ),
   atsScore: z.number().min(0).max(100),
