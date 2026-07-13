@@ -3,7 +3,7 @@ import { analyzeResume } from "@/lib/gemini";
 import jwt from "jsonwebtoken";
 import { cookies } from "next/headers";
 import prisma from "@/lib/db";
-const pdf = require("pdf-parse");
+const pdf = require("pdf-parse/lib/pdf-parse.js");
 
 const JWT_SECRET = process.env.JWT_SECRET || "skillgap-default-secret-key-123456";
 
