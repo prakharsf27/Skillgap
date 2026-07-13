@@ -3,6 +3,7 @@ import { analyzeResume } from "@/lib/gemini";
 import jwt from "jsonwebtoken";
 import { cookies } from "next/headers";
 import prisma from "@/lib/db";
+const pdf = require("pdf-parse");
 
 const JWT_SECRET = process.env.JWT_SECRET || "skillgap-default-secret-key-123456";
 
@@ -19,8 +20,30 @@ export async function POST(request: NextRequest) {
       } catch {}
     }
 
-    const body = await request.json();
-    const { resumeText } = body;
+    let resumeText = "";
+    const contentType = request.headers.get("content-type") || "";
+
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await request.formData();
+      const file = formData.get("file") as File;
+      if (!file) {
+        return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
+      }
+
+      const fileBuffer = Buffer.from(await file.arrayBuffer());
+
+      if (file.name.endsWith(".pdf")) {
+        const parsed = await pdf(fileBuffer);
+        resumeText = parsed.text;
+      } else if (file.name.endsWith(".txt")) {
+        resumeText = fileBuffer.toString("utf-8");
+      } else {
+        return NextResponse.json({ error: "Unsupported file format. Only PDF and TXT are supported." }, { status: 400 });
+      }
+    } else {
+      const body = await request.json();
+      resumeText = body.resumeText;
+    }
 
     if (!resumeText || resumeText.trim().length === 0) {
       return NextResponse.json({ error: "resumeText is required" }, { status: 400 });
@@ -52,7 +75,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ success: true, analysis });
+    return NextResponse.json({ success: true, analysis, resumeText });
   } catch (err) {
     console.error("[API /ai/resume-analyze]", err);
     return NextResponse.json(

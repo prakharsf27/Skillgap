@@ -25,6 +25,7 @@ export default function ResumeModule() {
   const [uploaded, setUploaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
+  const [dragActive, setDragActive] = useState(false);
 
   // Load from local storage on mount
   useEffect(() => {
@@ -43,6 +44,60 @@ export default function ResumeModule() {
       }
     }
   }, []);
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      await uploadAndAnalyze(file);
+    }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      await uploadAndAnalyze(file);
+    }
+  };
+
+  const uploadAndAnalyze = async (file: File) => {
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/ai/resume-analyze", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to analyze resume");
+
+      const analysisData = data.analysis as ResumeAnalysis;
+      setAnalysis(analysisData);
+      localStorage.setItem("skillgap_extracted_resume", JSON.stringify(analysisData));
+      setResumeText(data.resumeText || "");
+      setUploaded(true);
+    } catch (err: any) {
+      alert(err.message || "Failed to analyze resume file");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const triggerUpload = () => {
     // Fill a realistic candidate resume text automatically
@@ -158,16 +213,38 @@ Alliance University - B.Tech in Computer Science and Engineering (Expected Gradu
           <div className="lg:col-span-5 flex flex-col gap-6">
             <GlassCard className="p-6 md:p-8 flex flex-col justify-between h-full" glow="#6366F1">
               {!uploaded ? (
-                <div className="space-y-5 flex-1 flex flex-col justify-center">
-                  <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/22 flex items-center justify-center text-[#A5B4FC] mx-auto mb-2">
-                    <FileText size={24} />
+                <div className="space-y-5 flex-1 flex flex-col justify-center animate-fade-in">
+                  <div 
+                    onDragEnter={handleDrag}
+                    onDragOver={handleDrag}
+                    onDragLeave={handleDrag}
+                    onDrop={handleDrop}
+                    className={`relative w-full border-2 border-dashed rounded-2xl py-8 px-4 flex flex-col items-center justify-center transition-all cursor-pointer bg-white/[0.01] hover:bg-white/[0.03]
+                      ${dragActive ? "border-indigo-500 bg-indigo-500/5 scale-[0.98]" : "border-white/10 hover:border-white/20"}
+                    `}
+                    onClick={() => document.getElementById("resume-file-input")?.click()}
+                  >
+                    <input
+                      id="resume-file-input"
+                      type="file"
+                      accept=".pdf,.txt"
+                      onChange={handleFileChange}
+                      className="hidden"
+                    />
+                    <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/22 flex items-center justify-center text-[#A5B4FC] mb-3">
+                      {loading ? (
+                        <RefreshCw size={20} className="animate-spin text-indigo-400" />
+                      ) : (
+                        <Upload size={20} />
+                      )}
+                    </div>
+                    <span className="text-white font-bold text-xs">
+                      {loading ? "Analyzing Document..." : "Click or Drag & Drop Resume File"}
+                    </span>
+                    <span className="text-[10px] text-white/40 mt-1">Supports PDF, TXT (Max 5MB)</span>
                   </div>
-                  <h3 className="text-white font-bold text-base text-center">Analyze Your Resume</h3>
-                  <p className="text-xs text-white/40 max-w-xs mx-auto leading-relaxed text-center">
-                    Gemini AI will scan your formatting structure, evaluate keywords, extract tech skills and project files.
-                  </p>
 
-                  <div className="grid grid-cols-2 gap-3 pt-2">
+                  <div className="grid grid-cols-2 gap-3 pt-1">
                     <button
                       onClick={triggerUpload}
                       type="button"
@@ -192,7 +269,7 @@ Alliance University - B.Tech in Computer Science and Engineering (Expected Gradu
                     </button>
                   </div>
 
-                  <div className="relative flex py-2 items-center">
+                  <div className="relative flex py-1 items-center">
                     <div className="flex-grow border-t border-white/5"></div>
                     <span className="flex-shrink mx-3 text-[9px] text-white/30 uppercase tracking-widest">Or Paste Text Directly</span>
                     <div className="flex-grow border-t border-white/5"></div>
@@ -203,7 +280,7 @@ Alliance University - B.Tech in Computer Science and Engineering (Expected Gradu
                       placeholder="Paste your raw resume text here to analyze..."
                       value={resumeText}
                       onChange={(e) => setResumeText(e.target.value)}
-                      className="w-full min-h-[200px] p-3 rounded-xl text-xs outline-none border border-white/8 bg-white/4 text-white focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all font-mono leading-relaxed placeholder:text-white/20 scrollbar-thin"
+                      className="w-full min-h-[140px] p-3 rounded-xl text-xs outline-none border border-white/8 bg-white/4 text-white focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all font-mono leading-relaxed placeholder:text-white/20 scrollbar-thin"
                     />
                   </div>
                 </div>
