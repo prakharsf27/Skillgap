@@ -13,12 +13,48 @@ export default function Sidebar() {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
     // Sync initial theme
     const currentTheme = document.documentElement.classList.contains("light") ? "light" : "dark";
     setTheme(currentTheme);
   }, []);
+
+  useEffect(() => {
+    async function loadSession() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data.user);
+        }
+      } catch (err) {
+        console.error("Failed to load sidebar user:", err);
+      }
+    }
+    loadSession();
+  }, []);
+
+  const handleLogout = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    } catch (err) {
+      console.error("Logout failed:", err);
+    }
+  };
+
+  const getInitials = (nameStr: string) => {
+    if (!nameStr) return "SG";
+    return nameStr
+      .split(" ")
+      .map((n) => n[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2);
+  };
 
   const toggleTheme = () => {
     const nextTheme = theme === "dark" ? "light" : "dark";
@@ -117,19 +153,24 @@ export default function Sidebar() {
         <div className="border-t border-white/5 pt-6 px-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-xs font-bold text-white">
-              RS
+              {getInitials(user?.name)}
             </div>
-            <div>
-              <div className="text-xs font-semibold text-white">Rahul Sharma</div>
-              <div className="text-[10px] text-white/40">CSE 2024</div>
+            <div className="max-w-[120px] truncate">
+              <div className="text-xs font-semibold text-white truncate" title={user?.name || "Guest Account"}>
+                {user?.name || "Guest Account"}
+              </div>
+              <div className="text-[10px] text-white/40 truncate" title={user?.targetTrack || "Software Engineer"}>
+                {user?.targetTrack || "Software Engineer"}
+              </div>
             </div>
           </div>
-          <Link
-            href="/login"
+          <button
+            onClick={handleLogout}
             className="text-white/30 hover:text-red-400 cursor-pointer transition-colors"
+            title="Sign Out"
           >
             <LogOut size={16} />
-          </Link>
+          </button>
         </div>
       </aside>
 

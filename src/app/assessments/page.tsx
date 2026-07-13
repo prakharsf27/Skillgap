@@ -1,7 +1,8 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { 
   Code2, FolderGit2, Award, FileText, 
   ArrowRight, Clock, CheckCircle2, AlertCircle 
@@ -10,6 +11,113 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { GlassCard, GradientText } from "@/components/shared";
 
 export default function AssessmentHub() {
+  const router = useRouter();
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [certsScore, setCertsScore] = useState(0);
+  const [certsCount, setCertsCount] = useState(0);
+  const [projectsScore, setProjectsScore] = useState(0);
+  const [projectsCount, setProjectsCount] = useState(0);
+
+  useEffect(() => {
+    async function loadSession() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (!res.ok) {
+          router.push("/login");
+          return;
+        }
+        const data = await res.json();
+        setUser(data.user);
+      } catch (err) {
+        console.error("Session error:", err);
+        router.push("/login");
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadSession();
+  }, [router]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    if (typeof window !== "undefined") {
+      // Load certifications
+      const savedCerts = localStorage.getItem("skillgap_certifications");
+      if (savedCerts) {
+        try {
+          const parsed = JSON.parse(savedCerts);
+          setCertsCount(parsed.length);
+          if (parsed.length) {
+            const avg = Math.round(
+              parsed.reduce((acc: number, cur: any) => acc + (cur.relevanceScore || 0), 0) / parsed.length
+            );
+            setCertsScore(avg);
+          }
+        } catch {}
+      }
+
+      // Load projects
+      const savedProjects = localStorage.getItem("skillgap_projects");
+      if (savedProjects) {
+        try {
+          const parsed = JSON.parse(savedProjects);
+          setCertsCount(parsed.length);
+          if (parsed.length) {
+            let totalScore = 0;
+            let count = 0;
+            parsed.forEach((p: any) => {
+              const rep = localStorage.getItem(`skillgap_project_report_${p.id}`);
+              if (rep) {
+                try {
+                  const parsedRep = JSON.parse(rep);
+                  totalScore += parsedRep.overallScore || 0;
+                  count++;
+                } catch {}
+              }
+            });
+            setProjectsCount(parsed.length);
+            if (count > 0) {
+              setProjectsScore(Math.round(totalScore / count));
+            }
+          }
+        } catch {}
+      }
+    }
+  }, [user]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#08080F] flex items-center justify-center text-white">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-full border-4 border-indigo-500/30 border-t-indigo-500 animate-spin" />
+          <p className="text-white/60 text-sm">Loading assessments hub...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Calculate dimension metrics from DB
+  const dsaAssessments = user?.assessments?.filter((a: any) => a.category === "DSA") || [];
+  const scenarioAssessments = user?.assessments?.filter((a: any) => a.category === "Scenario") || [];
+  const latestResume = user?.resumes?.[0];
+
+  const codingScore = dsaAssessments.length || scenarioAssessments.length
+    ? Math.round(
+        [...dsaAssessments, ...scenarioAssessments].reduce((acc: number, cur: any) => acc + cur.score, 0) /
+        (dsaAssessments.length + scenarioAssessments.length)
+      )
+    : 0;
+
+  const resumeScore = latestResume ? latestResume.atsScore : 0;
+
+  // Determine card attributes dynamically
+  const isCodingCompleted = dsaAssessments.length > 0 || scenarioAssessments.length > 0;
+  const isResumeCompleted = !!latestResume;
+  const isCertsCompleted = certsCount > 0;
+  const isProjectsCompleted = projectsScore > 0;
+
   const cards = [
     {
       id: "coding",
@@ -17,11 +125,11 @@ export default function AssessmentHub() {
       desc: "Solve adaptive DSA algorithmic challenges and scenario-based coding prompts.",
       icon: Code2,
       time: "45 mins",
-      score: "80%",
-      status: "Completed",
-      statusColor: "#34D399",
+      score: `${codingScore}%`,
+      status: isCodingCompleted ? "Completed" : "Not Started",
+      statusColor: isCodingCompleted ? "#34D399" : "#6B7280",
       href: "/assessments/coding",
-      actionLabel: "Review Test Results",
+      actionLabel: isCodingCompleted ? "Review Test Results" : "Start Coding Test",
     },
     {
       id: "projects",
@@ -29,11 +137,11 @@ export default function AssessmentHub() {
       desc: "Analyze project source repositories, architecture depth, and complete AI interviews.",
       icon: FolderGit2,
       time: "30 mins",
-      score: "70%",
-      status: "In Progress",
-      statusColor: "#F59E0B",
+      score: `${projectsScore}%`,
+      status: isProjectsCompleted ? "Completed" : "Not Started",
+      statusColor: isProjectsCompleted ? "#34D399" : "#6B7280",
       href: "/assessments/projects",
-      actionLabel: "Resume Evaluation",
+      actionLabel: isProjectsCompleted ? "Review Report" : "Start Evaluation",
     },
     {
       id: "certifications",
@@ -41,11 +149,11 @@ export default function AssessmentHub() {
       desc: "Verify credential relevance, weigh courses against live requirements, and review recommendations.",
       icon: Award,
       time: "15 mins",
-      score: "60%",
-      status: "Verified",
-      statusColor: "#60A5FA",
+      score: `${certsScore}%`,
+      status: isCertsCompleted ? "Verified" : "Not Added",
+      statusColor: isCertsCompleted ? "#60A5FA" : "#6B7280",
       href: "/assessments/certifications",
-      actionLabel: "Add Certificate",
+      actionLabel: isCertsCompleted ? "Add More Certificates" : "Add Certificate",
     },
     {
       id: "resume",
@@ -53,13 +161,15 @@ export default function AssessmentHub() {
       desc: "Scan structural parameters, match resume keywords with JDs, and check ATS compatibility.",
       icon: FileText,
       time: "10 mins",
-      score: "65%",
-      status: "Analyzed",
-      statusColor: "#A5B4FC",
+      score: `${resumeScore}%`,
+      status: isResumeCompleted ? "Analyzed" : "Not Uploaded",
+      statusColor: isResumeCompleted ? "#34D399" : "#6B7280",
       href: "/assessments/resume",
-      actionLabel: "Upload Resume",
+      actionLabel: isResumeCompleted ? "Upload New Resume" : "Upload Resume",
     },
   ];
+
+  const allPhasesDone = isCodingCompleted && isResumeCompleted && isCertsCompleted && isProjectsCompleted;
 
   return (
     <DashboardLayout>
@@ -135,31 +245,33 @@ export default function AssessmentHub() {
         </div>
 
         {/* Global Summary Card */}
-        <GlassCard className="p-6 md:p-8 border-indigo-500/10" glow="#6366F1">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-            <div className="flex items-start gap-4">
-              <div className="w-10 h-10 rounded-2xl bg-indigo-500/10 border border-indigo-500/22 flex items-center justify-center text-indigo-400 mt-0.5 flex-shrink-0">
-                <CheckCircle2 size={18} />
+        {allPhasesDone && (
+          <GlassCard className="p-6 md:p-8 border-indigo-500/10" glow="#6366F1">
+            <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-500/10 border border-indigo-500/22 flex items-center justify-center text-indigo-400 mt-0.5 flex-shrink-0">
+                  <CheckCircle2 size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base">All Initial Phases Completed</h3>
+                  <p className="text-sm text-white/44 max-w-xl mt-1 leading-relaxed">
+                    Your baseline evaluation metrics are fully calculated. You can access the full Skill Gap report below to check role benchmarks and recommended learning tracks.
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="font-bold text-white text-base">All Initial Phases Completed</h3>
-                <p className="text-sm text-white/44 max-w-xl mt-1 leading-relaxed">
-                  Your baseline evaluation metrics are fully calculated. You can access the full Skill Gap report below to check role benchmarks and recommended learning tracks.
-                </p>
-              </div>
+              <Link
+                href="/reports/skill-gap"
+                className="px-6 py-3 rounded-xl font-bold text-xs text-white transition-all hover:opacity-90 cursor-pointer flex items-center justify-center flex-shrink-0"
+                style={{
+                  background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
+                  boxShadow: "0 0 24px rgba(99, 102, 241, 0.35)",
+                }}
+              >
+                View Skill Gap Report
+              </Link>
             </div>
-            <Link
-              href="/reports/skill-gap"
-              className="px-6 py-3 rounded-xl font-bold text-xs text-white transition-all hover:opacity-90 cursor-pointer flex items-center justify-center flex-shrink-0"
-              style={{
-                background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
-                boxShadow: "0 0 24px rgba(99, 102, 241, 0.35)",
-              }}
-            >
-              View Skill Gap Report
-            </Link>
-          </div>
-        </GlassCard>
+          </GlassCard>
+        )}
       </div>
     </DashboardLayout>
   );
