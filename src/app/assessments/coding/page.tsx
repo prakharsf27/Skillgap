@@ -238,6 +238,7 @@ export default function CodingAssessment() {
   // Evaluation Results State
   const [evaluationResults, setEvaluationResults] = useState<QuestionEvaluation[]>([]);
   const [evalError, setEvalError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState(0);
 
   // Syntax Diagnostic States
   const [syntaxErrors, setSyntaxErrors] = useState<Array<{ line?: number; message: string; severity: string }>>([]);
@@ -364,6 +365,70 @@ export default function CodingAssessment() {
     }, 1000);
     return () => clearInterval(interval);
   }, [step]);
+
+  // Tab switching and fullscreen control for cheating prevention
+  useEffect(() => {
+    if (step !== "workspace") return;
+
+    const enterFS = () => {
+      const elem = document.documentElement;
+      if (elem.requestFullscreen) {
+        elem.requestFullscreen().catch((err) => {
+          console.warn("Fullscreen mode request denied:", err);
+        });
+      }
+    };
+    
+    // Trigger fullscreen immediately when workspace starts
+    enterFS();
+
+    let localWarnings = 0;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        localWarnings += 1;
+        setWarnings(localWarnings);
+
+        if (localWarnings > 3) {
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+          }
+          alert("Assessment Terminated: You have switched tabs more than 3 times. The test is closed.");
+          router.push("/assessments");
+        } else {
+          alert(`Warning ${localWarnings}/3: Tab switching is strictly prohibited! The next attempt will terminate this assessment.`);
+          enterFS();
+        }
+      }
+    };
+
+    const handleFullscreenChange = () => {
+      // Exiting fullscreen is also a violation
+      if (!document.fullscreenElement && step === "workspace") {
+        localWarnings += 1;
+        setWarnings(localWarnings);
+
+        if (localWarnings > 3) {
+          alert("Assessment Terminated: You exited fullscreen mode too many times.");
+          router.push("/assessments");
+        } else {
+          alert(`Warning ${localWarnings}/3: Staying in Fullscreen is required. Exiting fullscreen again will terminate the test.`);
+          enterFS();
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    };
+  }, [step, router]);
 
   const formatTime = (totalSecs: number) => {
     const mins = Math.floor(totalSecs / 60);
