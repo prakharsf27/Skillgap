@@ -42,18 +42,34 @@ function LoginContent() {
 
     setLoading(true);
 
-    // Mock auth API call
-    setTimeout(() => {
+    try {
+      const endpoint = activeTab === "signup" ? "/api/auth/register" : "/api/auth/login";
+      const payload = activeTab === "signup" ? { name, email, password } : { email, password };
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Authentication failed");
+      }
+
       setLoading(false);
       if (activeTab === "signup") {
-        setSuccessMsg("Account verification link sent to your email!");
+        setSuccessMsg("Account registered successfully! Loading onboarding...");
         setTimeout(() => {
-          router.push("/verify-email");
+          router.push("/onboarding");
         }, 1500);
       } else {
-        router.push("/onboarding");
+        router.push("/dashboard");
       }
-    }, 1200);
+    } catch (err: any) {
+      setLoading(false);
+      setError(err.message || "An unexpected error occurred.");
+    }
   };
 
   const triggerGoogleLogin = () => {

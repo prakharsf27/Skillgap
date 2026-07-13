@@ -57,7 +57,7 @@ export default function OnboardingPage() {
     }
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (step === 1 && !selectedRole) return;
     if (step === 2 && (!currentYear || !college)) return;
     if (step === 4 && (!difficulty || !preferredLanguage)) return;
@@ -66,9 +66,22 @@ export default function OnboardingPage() {
       setStep(step + 1);
     } else {
       setPreparing(true);
+      try {
+        const selectedRoleObj = roles.find(r => r.id === selectedRole);
+        const trackTitle = selectedRoleObj ? selectedRoleObj.title : "Full Stack Developer";
+
+        await fetch("/api/profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ targetTrack: trackTitle }),
+        });
+      } catch (err) {
+        console.error("Failed to save onboarding profile:", err);
+      }
+
       setTimeout(() => {
         router.push("/dashboard");
-      }, 2500);
+      }, 2000);
     }
   };
 

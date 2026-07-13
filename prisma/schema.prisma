@@ -1,0 +1,51 @@
+// Prisma schema file for Skillgap platform
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id             String       @id @default(uuid())
+  name           String
+  email          String       @unique
+  password       String // Hashed password
+  targetTrack    String?      @default("Full Stack Developer")
+  readinessScore Int          @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  resumes        Resume[]
+  assessments    Assessment[]
+}
+
+model Resume {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skills          String // JSON string or comma-separated list
+  experience      String // JSON string
+  projects        String // JSON string
+  education       String // JSON string
+  atsScore        Int      @default(0)
+  feedback        String
+  missingKeywords String // JSON string or comma-separated list
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Assessment {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category      String // "DSA" | "Scenario"
+  title         String
+  difficulty    String
+  score         Int      @default(0)
+  feedback      String
+  submittedCode String? // Nullable for scenarios, stores code for DSA
+  createdAt     DateTime @default(now())
+}
