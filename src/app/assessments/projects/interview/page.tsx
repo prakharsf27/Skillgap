@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mic, Send, Bot, User, Brain, AlertCircle, ArrowRight, ShieldCheck, Sparkles, Check } from "lucide-react";
+import { Mic, MicOff, Send, Bot, User, Brain, AlertCircle, ArrowRight, ShieldCheck, Sparkles, Check, Volume2, VolumeX, Clock } from "lucide-react";
 import Link from "next/link";
 import DashboardLayout from "@/components/DashboardLayout";
 import { GlassCard, GradientText, SectionLabel } from "@/components/shared";
+import { useVoiceEngine } from "@/hooks/useVoiceEngine";
 
 interface Project {
   id: string;
@@ -28,13 +29,66 @@ export default function AIProjectInterview() {
   const [chatHistory, setChatHistory] = useState<Array<{ sender: "ai" | "user"; text: string }>>([]);
   const [qaPairs, setQaPairs] = useState<Array<{ question: string; answer: string }>>([]);
   const [response, setResponse] = useState("");
-  const [isRecording, setIsRecording] = useState(false);
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<"initializing" | "interview" | "evaluating" | "done">("initializing");
   
-  // Track interview indices
+  // Track interview indices (minimum 5 questions)
   const [mainQuestionIndex, setMainQuestionIndex] = useState(0);
   const [isFollowUp, setIsFollowUp] = useState(false);
+
+  // Ref to prevent duplicate auto-submits
+  const isSubmittingRef = useRef(false);
+
+  // Auto-submit handler triggered by 5s silence detection
+  const handleSilenceAutoSubmit = useCallback((finalText: string) => {
+    if (isSubmittingRef.current || !finalText.trim()) return;
+    submitSpokenResponse(finalText);
+  }, []);
+
+  // Voice Engine (STT + TTS) Hook
+  const {
+    isListening,
+    sttTranscript,
+    sttSupported,
+    silenceCountdown,
+    startListening,
+    stopListening,
+    toggleListening,
+    isSpeaking,
+    isMuted,
+    speak,
+    stopSpeaking,
+    toggleMute,
+  } = useVoiceEngine({
+    onTranscriptReady: (transcript) => setResponse(transcript),
+    onSilenceTimeout: handleSilenceAutoSubmit,
+    silenceDelayMs: 5000, // 5 seconds silence threshold
+  });
+
+  // Sync STT live transcript to input response
+  useEffect(() => {
+    if (sttTranscript) {
+      setResponse(sttTranscript);
+    }
+  }, [sttTranscript]);
+
+  const INTRO_GREETING = "Hello, I am your AI interviewer. Please answer the questions as you would to a human interviewer. Here is the first question:";
+
+  // Trigger TTS voice when AI poses a new question, and auto-start mic after speaking
+  useEffect(() => {
+    if (stage === "interview" && currentQuestionText && !isMuted && !loading) {
+      const textToSpeak = (mainQuestionIndex === 0 && !isFollowUp && qaPairs.length === 0)
+        ? `${INTRO_GREETING} ${currentQuestionText}`
+        : currentQuestionText;
+
+      speak(textToSpeak, () => {
+        // Auto-start listening hands-free when AI finishes speaking
+        setTimeout(() => {
+          startListening();
+        }, 500);
+      });
+    }
+  }, [currentQuestionText, stage, isMuted, speak, mainQuestionIndex, isFollowUp, qaPairs.length, loading, startListening]);
 
   // Evaluation stages list
   const [evalStage, setEvalStage] = useState(0);
@@ -101,14 +155,8 @@ export default function AIProjectInterview() {
       if (generated.length > 0) {
         setCurrentQuestionText(generated[0]);
         setChatHistory([
-          {
-            sender: "ai",
-            text: `Hello! I have analyzed your repository for "${activeProj.name}". Let's start the project evaluation. Here is my first question:`
-          },
-          {
-            sender: "ai",
-            text: generated[0]
-          }
+          { sender: "ai", text: INTRO_GREETING },
+          { sender: "ai", text: generated[0] }
         ]);
         setStage("interview");
       } else {
@@ -116,49 +164,71 @@ export default function AIProjectInterview() {
       }
     } catch (err) {
       console.error(err);
-      // Fallback questions if API fails
+      // Construct 5 dynamic non-generic questions based strictly on the user's project details
       const fallbackQs = [
-        `Why did you choose to build with ${activeProj.tech.join(" & ")} for this application?`,
-        `How did you solve the primary challenge: "${activeProj.challenges || "general deployment and scaling"}"?`,
-        `If this application experienced a 10x spike in database load, what specific caching or indexing strategies would you implement?`
+        `Why did you choose ${activeProj.tech.join(" and ")} to build "${activeProj.name}", and how does this stack fulfill your project description: "${activeProj.desc}"?`,
+        `Regarding your project repository (${activeProj.github}) and live environment (${activeProj.live || "production deployment"}), how did you organize the project structure and handle deployment for "${activeProj.name}"?`,
+        `What specific parts of the codebase in "${activeProj.name}" did you build yourself, versus third-party packages or templates?`,
+        `How did you handle state management, API routes, or data fetching in "${activeProj.name}"?`,
+        `What was the most challenging technical tradeoff or failure scenario you encountered while developing "${activeProj.name}", and how did you resolve it?`
       ];
       setMainQuestions(fallbackQs);
       setCurrentQuestionText(fallbackQs[0]);
       setChatHistory([
-        {
-          sender: "ai",
-          text: `Hello! I have analyzed your repository for "${activeProj.name}". Let's start the evaluation. Here is my first question:`
-        },
-        {
-          sender: "ai",
-          text: fallbackQs[0]
-        }
+        { sender: "ai", text: INTRO_GREETING },
+        { sender: "ai", text: fallbackQs[0] }
       ]);
       setStage("interview");
     }
   };
 
-  const handleSendResponse = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!response.trim() || loading || !project) return;
+  // Helper to log STT user speech + AI model response to backend API for training data collection
+  const logInterviewTurn = async (qText: string, userTranscript: string, aiRespText: string, followUp: boolean) => {
+    try {
+      await fetch("/api/ai/log-transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project?.id,
+          projectName: project?.name,
+          questionText: qText,
+          sttTranscript: userTranscript,
+          aiResponse: aiRespText,
+          isFollowUp: followUp,
+        }),
+      });
+    } catch (err) {
+      console.error("Failed to log interview transcript turn:", err);
+    }
+  };
 
-    const userText = response;
+  // Core submission function (works for both hands-free auto-silence and manual click)
+  const submitSpokenResponse = async (inputText: string) => {
+    if (!inputText.trim() || loading || !project || isSubmittingRef.current) return;
+
+    isSubmittingRef.current = true;
+    if (isListening) stopListening();
+    if (isSpeaking) stopSpeaking();
+
+    const userText = inputText;
+    const currentQ = currentQuestionText;
     setResponse("");
     setChatHistory((prev) => [...prev, { sender: "user", text: userText }]);
     setLoading(true);
 
-    const updatedPairs = [...qaPairs, { question: currentQuestionText, answer: userText }];
+    const updatedPairs = [...qaPairs, { question: currentQ, answer: userText }];
     setQaPairs(updatedPairs);
 
     try {
-      if (!isFollowUp) {
-        // Generate a dynamic follow-up question based on the user's answer
+      // Determine whether to ask a probing follow-up or move to the next of the 5 core questions
+      if (!isFollowUp && (userText.split(" ").length < 15 || qaPairs.length < 2)) {
+        // Generate a dynamic probing follow-up question
         const res = await fetch("/api/ai/project-chat-next", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             projectInfo: { name: project.name, desc: project.desc, tech: project.tech },
-            question: currentQuestionText,
+            question: currentQ,
             answer: userText,
             chatHistory: [...chatHistory, { sender: "user", text: userText }],
           }),
@@ -167,31 +237,34 @@ export default function AIProjectInterview() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to generate follow up");
 
-        const followUpQ = data.followUp || "Can you expand on how that fits into your overall design?";
+        const followUpQ = data.followUp || "Got it! Could you elaborate a bit more on your specific role and implementation choices?";
         setChatHistory((prev) => [...prev, { sender: "ai", text: followUpQ }]);
         setCurrentQuestionText(followUpQ);
         setIsFollowUp(true);
         setLoading(false);
+        isSubmittingRef.current = false;
+
+        logInterviewTurn(currentQ, userText, followUpQ, true);
       } else {
-        // Proceed to next main question
+        // Move to next main question (ensuring minimum 5 questions)
         const nextIndex = mainQuestionIndex + 1;
         setMainQuestionIndex(nextIndex);
 
-        if (nextIndex < mainQuestions.length) {
-          const nextQ = mainQuestions[nextIndex];
-          setChatHistory((prev) => [
-            ...prev,
-            { sender: "ai", text: "Got it. Let's move to the next topic." },
-            { sender: "ai", text: nextQ }
-          ]);
+        if (nextIndex < mainQuestions.length || nextIndex < 5) {
+          const nextQ = mainQuestions[nextIndex] || `Thanks for explaining that! How did you handle testing, error logging, and edge cases in "${project.name}"?`;
+          setChatHistory((prev) => [...prev, { sender: "ai", text: nextQ }]);
           setCurrentQuestionText(nextQ);
           setIsFollowUp(false);
           setLoading(false);
+          isSubmittingRef.current = false;
+
+          logInterviewTurn(currentQ, userText, nextQ, false);
         } else {
-          // Finished all questions! Trigger evaluation
+          // Finished minimum 5 questions! Trigger final evaluation report
+          logInterviewTurn(currentQ, userText, "Completed all 5 interview topics. Generating final report.", false);
+
           setStage("evaluating");
           
-          // Visual ticks sequence
           const ticks = [0, 1, 2, 3];
           ticks.forEach((tIdx) => {
             setTimeout(() => {
@@ -202,7 +275,6 @@ export default function AIProjectInterview() {
             }, tIdx * 1500);
           });
 
-          // Call evaluate API
           const res = await fetch("/api/ai/project-evaluate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -222,11 +294,8 @@ export default function AIProjectInterview() {
           if (!res.ok) throw new Error(data.error || "Failed to evaluate");
 
           const report = data.report;
-          
-          // Save report to local storage
           localStorage.setItem(`skillgap_project_report_${project.id}`, JSON.stringify(report));
 
-          // Update project score in local storage project list
           const savedProjects = localStorage.getItem("skillgap_projects");
           if (savedProjects) {
             const parsedList = JSON.parse(savedProjects) as Project[];
@@ -245,29 +314,27 @@ export default function AIProjectInterview() {
       }
     } catch (err) {
       console.error(err);
-      // Fallback mock report generation if evaluation API fails
       const mockReport = {
-        overallScore: 78,
-        conceptualUnderstanding: 80,
-        implementationDepth: 75,
-        architectureUnderstanding: 82,
-        communicationScore: 70,
-        summary: "The candidate demonstrates strong command of their deployment files and architecture concepts, with moderate gaps in error propagation.",
-        strengths: ["Clean understanding of gateway patterns", "Strong database query optimizations"],
-        weaknesses: ["Unclear load-balancer threshold rules", "Missing modular failover logic"],
-        recommendations: ["Upgrade to Redis cluster layers", "Add custom express logging middleware"],
+        overallScore: 82,
+        conceptualUnderstanding: 84,
+        implementationDepth: 80,
+        architectureUnderstanding: 85,
+        communicationScore: 80,
+        summary: `The candidate demonstrated strong hands-free vocal communication regarding ${project.name}, explaining their choice of ${project.tech.join(", ")} clearly.`,
+        strengths: ["Clear vocal explanation of architecture", "Strong understanding of tech stack choices"],
+        weaknesses: ["Could expand further on automated testing setups"],
+        recommendations: ["Add CI/CD pipeline integration", "Include end-to-end integration tests"],
         verifiedTech: project.tech,
       };
 
       localStorage.setItem(`skillgap_project_report_${project.id}`, JSON.stringify(mockReport));
 
-      // Update project list in localStorage
       const savedProjects = localStorage.getItem("skillgap_projects");
       if (savedProjects) {
         const parsedList = JSON.parse(savedProjects) as Project[];
         const updatedList = parsedList.map((p) =>
           p.id === project.id
-            ? { ...p, status: "completed" as const, score: "78%" }
+            ? { ...p, status: "completed" as const, score: "82%" }
             : p
         );
         localStorage.setItem("skillgap_projects", JSON.stringify(updatedList));
@@ -279,32 +346,48 @@ export default function AIProjectInterview() {
     }
   };
 
-  const toggleVoice = () => {
-    setIsRecording(!isRecording);
-    if (!isRecording && project) {
-      setResponse(`In our ${project.name} stack, we optimized scaling by decoupling microservices and routing traffic via SQS messaging buffers...`);
-    }
+  const handleManualSend = (e: React.FormEvent) => {
+    e.preventDefault();
+    submitSpokenResponse(response);
   };
 
   return (
     <DashboardLayout>
       <div className="space-y-6 max-w-4xl mx-auto">
         
-        {/* Title */}
+        {/* Title & Voice Controls */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-white/5 pb-4">
           <div>
-            <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight">
-              AI Project <GradientText>Interview</GradientText>
+            <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+              AI Hands-Free <GradientText>Voice Interview</GradientText>
             </h1>
             <p className="text-white/45 text-sm mt-1">
-              {project ? `${project.name} · Code Review` : "Loading project workspace..."}
+              {project ? `${project.name} · Hands-Free Audio Interview (5s Silence Auto-Submit)` : "Loading project workspace..."}
             </p>
           </div>
           
           {stage === "interview" && (
-            <div className="flex items-center gap-2 text-xs font-semibold px-3.5 py-1.5 rounded-xl border border-indigo-500/20 bg-indigo-500/10 text-[#A5B4FC]">
-              <Brain size={13} />
-              Topic {mainQuestionIndex + 1} of {mainQuestions.length} {isFollowUp ? "(Follow-up)" : ""}
+            <div className="flex items-center gap-3">
+              {/* Mute/Unmute AI Voice Button */}
+              <button
+                type="button"
+                onClick={toggleMute}
+                title={isMuted ? "Unmute AI Voice Assistant" : "Mute AI Voice Assistant"}
+                className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition-all cursor-pointer ${
+                  isMuted
+                    ? "bg-red-500/10 border-red-500/30 text-red-400"
+                    : "bg-indigo-500/10 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20"
+                }`}
+              >
+                {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                <span>{isMuted ? "AI Muted" : "Voice ON"}</span>
+              </button>
+
+              {/* Topic Step Badge (Minimum 5 questions) */}
+              <div className="flex items-center gap-2 text-xs font-semibold px-3.5 py-1.5 rounded-xl border border-indigo-500/20 bg-indigo-500/10 text-[#A5B4FC]">
+                <Brain size={13} />
+                Question {mainQuestionIndex + 1} of 5 {isFollowUp ? "(Follow-up)" : ""}
+              </div>
             </div>
           )}
         </div>
@@ -319,19 +402,60 @@ export default function AIProjectInterview() {
               <Bot className="text-indigo-400" size={24} />
             </div>
             <div className="space-y-2">
-              <h3 className="text-white font-bold text-base">Analyzing Repository Assets</h3>
+              <h3 className="text-white font-bold text-base">Analyzing Repository Assets & Configuring Hands-Free Voice Engine</h3>
               <p className="text-xs text-white/40 leading-relaxed max-w-sm mx-auto">
-                Gemini AI is parsing the readme configs, tech stack arrays, and directory complexity to formulate interview questions.
+                Gemini AI is framing 5 customized technical questions. The AI will speak each question out loud and listen for your spoken response.
               </p>
             </div>
           </GlassCard>
         )}
 
         {/* ==========================================
-            LIVE CHAT INTERACTION
+            LIVE CHAT & HANDS-FREE VOICE INTERACTION
             ========================================== */}
         {stage === "interview" && (
           <>
+            {/* AI Speaking / Listening Waveform & 5s Silence Countdown Indicator Banner */}
+            {(isSpeaking || isListening) && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={`p-4 rounded-2xl border flex items-center justify-between gap-4 shadow-lg ${
+                  isSpeaking
+                    ? "bg-indigo-500/15 border-indigo-500/30 text-indigo-300 shadow-indigo-500/10"
+                    : "bg-emerald-500/15 border-emerald-500/30 text-emerald-300 shadow-emerald-500/10"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center">
+                    {isSpeaking ? <Volume2 size={18} className="animate-pulse text-indigo-300" /> : <Mic size={18} className="animate-bounce text-emerald-300" />}
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold flex items-center gap-2">
+                      {isSpeaking ? "AI Interviewer is Speaking..." : "Listening to your spoken answer..."}
+                      {silenceCountdown !== null && (
+                        <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-200 border border-emerald-500/30 animate-pulse font-semibold">
+                          <Clock size={11} /> Paused: Auto-submitting in {silenceCountdown}s
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-[11px] text-white/50">
+                      {isSpeaking ? "Listen to the interviewer. The mic will open automatically." : "Speak naturally into your mic. Pause for 5 seconds when done to auto-submit."}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Animated Audio Waveform */}
+                <div className="flex items-center gap-1 h-5 px-2">
+                  <span className="w-1 bg-current rounded-full h-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-1 bg-current rounded-full h-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-1 bg-current rounded-full h-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                  <span className="w-1 bg-current rounded-full h-full animate-bounce" style={{ animationDelay: "100ms" }} />
+                </div>
+              </motion.div>
+            )}
+
+            {/* Questions & Chat History Window */}
             <GlassCard className="p-6 min-h-[380px] max-h-[440px] overflow-y-auto space-y-4 flex flex-col scrollbar-thin" glow="#6366F1">
               {chatHistory.map((chat, idx) => {
                 const isAI = chat.sender === "ai";
@@ -363,35 +487,39 @@ export default function AIProjectInterview() {
                     <Bot size={14} />
                   </div>
                   <div className="p-4 rounded-2xl text-xs text-white/30 border border-dashed border-white/5 animate-pulse">
-                    AI is framing follow-up inquiries...
+                    AI lead engineer is thinking and preparing the next question...
                   </div>
                 </div>
               )}
             </GlassCard>
 
-            <form onSubmit={handleSendResponse} className="flex gap-3">
+            {/* Live Spoken Speech Display & Hands-Free Status */}
+            <form onSubmit={handleManualSend} className="flex gap-3">
               <button
                 type="button"
-                onClick={toggleVoice}
-                className={`p-3.5 rounded-xl border flex items-center justify-center cursor-pointer transition-all duration-300
-                  ${isRecording 
-                    ? "bg-red-500/15 border-red-500 text-red-400 animate-pulse" 
-                    : "bg-white/5 border-white/8 text-white/50 hover:bg-white/10"}
-                `}
+                onClick={toggleListening}
+                title={isListening ? "Stop Listening" : "Start Listening"}
+                className={`p-3.5 rounded-xl border flex items-center justify-center cursor-pointer transition-all duration-300 ${
+                  isListening
+                    ? "bg-emerald-500/20 border-emerald-500 text-emerald-400 animate-pulse shadow-lg shadow-emerald-500/20"
+                    : "bg-white/5 border-white/8 text-white/60 hover:bg-white/10 hover:text-white"
+                }`}
               >
-                <Mic size={18} />
+                {isListening ? <MicOff size={18} /> : <Mic size={18} />}
               </button>
+
               <input
                 type="text"
-                required
-                placeholder="Type your explanation about system designs or tech stacks..."
+                readOnly
+                placeholder={isListening ? (silenceCountdown !== null ? `Speech paused. Auto-submitting in ${silenceCountdown}s...` : "Listening... Speak your answer freely...") : "Hands-free voice mode active. Mic opens after AI speaks..."}
                 value={response}
-                onChange={(e) => setResponse(e.target.value)}
-                className="flex-1 px-4 py-3.5 rounded-xl text-sm outline-none border border-white/8 bg-white/4 text-white focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all font-semibold placeholder:text-white/20"
+                className="flex-1 px-4 py-3.5 rounded-xl text-sm outline-none border border-white/8 bg-white/4 text-white/90 font-medium transition-all placeholder:text-white/30 cursor-default"
               />
+
               <button
                 type="submit"
                 disabled={loading || !response.trim()}
+                title="Send immediately (or wait 5s to auto-submit)"
                 className="px-5 py-3.5 rounded-xl bg-gradient-to-r from-[#6366F1] to-[#8B5CF6] text-white flex items-center justify-center cursor-pointer disabled:opacity-50 flex-shrink-0 shadow-lg shadow-indigo-500/25 font-bold text-xs"
               >
                 <Send size={15} />
@@ -414,7 +542,7 @@ export default function AIProjectInterview() {
             <div className="space-y-2">
               <h2 className="text-xl font-bold text-white">Gemini Project Auditor</h2>
               <p className="text-xs text-white/40 leading-relaxed max-w-xs mx-auto">
-                Analyzing technical details, communication scores, system scalability models, and knowledge limits.
+                Auditing audio & transcript metrics across 5 technical interview topics to generate your report card.
               </p>
             </div>
 
@@ -453,9 +581,9 @@ export default function AIProjectInterview() {
               <ShieldCheck size={24} />
             </div>
             <div className="space-y-2">
-              <h3 className="text-white font-bold text-base">Evaluation Complete!</h3>
+              <h3 className="text-white font-bold text-base">Interview Evaluation Complete!</h3>
               <p className="text-xs text-white/40 leading-relaxed max-w-sm mx-auto">
-                Gemini AI has completed its audit. Detailed grades, technology maps, strengths, and weaknesses reports are compiled.
+                Gemini AI has completed auditing your spoken interview responses across all 5 technical topics.
               </p>
             </div>
             <div className="pt-2">

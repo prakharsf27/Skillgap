@@ -49,3 +49,15 @@ model Assessment {
   submittedCode String? // Nullable for scenarios, stores code for DSA
   createdAt     DateTime @default(now())
 }
+
+model InterviewLog {
+  id             String   @id @default(uuid())
+  projectId      String?
+  projectName    String?
+  questionText   String
+  sttTranscript  String   // User spoken text converted by STT
+  aiResponse     String   // AI model generated response
+  isFollowUp     Boolean  @default(false)
+  createdAt      DateTime @default(now())
+}
+

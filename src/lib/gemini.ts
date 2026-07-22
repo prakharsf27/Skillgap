@@ -340,23 +340,36 @@ export async function generateProjectQuestions(projectInfo: {
   challenges?: string;
 }): Promise<string[]> {
   const prompt = `
-SYSTEM: You are a senior technical interviewer reviewing a candidate's repository structure and claimed implementation. Output ONLY valid JSON.
+SYSTEM: You are a friendly, experienced Lead Software Engineer conducting a spoken technical conversation about a candidate's real project.
+CRITICAL TONE RULES:
+- Speak in a natural, warm, human conversational tone. NEVER sound like a rigid textbook or automated scanner.
+- Do NOT repeat back candidate text mechanically (e.g. NEVER say "You mentioned 'OK' in response to...").
+- Output ONLY valid JSON matching the schema.
 
 USER PROMPT:
-PROJECT DETAILS:
-Name: ${projectInfo.name}
-Description: ${projectInfo.desc}
-GitHub Repo: ${projectInfo.github}
-Live URL: ${projectInfo.live || "N/A"}
-Tech Stack: ${projectInfo.tech.join(", ")}
-Challenges Highlighted: ${projectInfo.challenges || "None declared"}
+PROJECT DETAILS SUBMITTED BY CANDIDATE:
+- Project Name: "${projectInfo.name}"
+- Description: "${projectInfo.desc}"
+- GitHub Repository URL: ${projectInfo.github}
+- Live Production URL: ${projectInfo.live || "N/A"}
+- Tech Stack: ${projectInfo.tech.join(", ")}
+- Highlights & Challenges: ${projectInfo.challenges || "None declared"}
 
-Return:
+Generate exactly 5 customized technical interview questions written as a human engineering interviewer speaking directly to the candidate:
+- Question 1: Ask about why they selected ${projectInfo.tech.join(", ")} to build "${projectInfo.name}" and how it connects to their goals in "${projectInfo.desc}".
+- Question 2: Ask how they structured the repository (${projectInfo.github}), component layout, or live environment (${projectInfo.live || "deployment"}).
+- Question 3: Ask specifically about their personal contribution to "${projectInfo.name}", what parts of the code they wrote themselves vs libraries used.
+- Question 4: Ask about state management, data flow, or API handling inside "${projectInfo.name}".
+- Question 5: Ask about the biggest engineering tradeoff, bug fix, or scaling challenge they faced building "${projectInfo.name}".
+
+Return JSON format:
 {
   "questions": [
-    "Challenge Question 1",
-    "Challenge Question 2",
-    "Challenge Question 3"
+    "Question 1 text...",
+    "Question 2 text...",
+    "Question 3 text...",
+    "Question 4 text...",
+    "Question 5 text..."
   ]
 }`;
 
@@ -381,7 +394,12 @@ export async function generateProjectFollowUp(
     .join("\n");
 
   const prompt = `
-SYSTEM: You are conducting a technical interview about the candidate's own project. Ask ONE question at a time. Be probing but fair — if their answer is vague, ask a natural follow-up. Base every question on their actual project description and prior answers, never generic questions. Output ONLY valid JSON.
+SYSTEM: You are a friendly, encouraging Lead Engineer chatting casually and deeply with a developer candidate.
+CRITICAL TONE RULES:
+- Speak naturally like a human interviewer (e.g. "Got it!", "Nice!", "That makes total sense.", "Thanks for sharing that!").
+- NEVER repeat candidate responses verbatim (e.g. NEVER say "You said OK" or "You mentioned X").
+- If candidate's answer was brief or vague, warmly encourage them to explain their specific role and implementation choices.
+- Output ONLY valid JSON matching the schema.
 
 USER PROMPT:
 Project Context:
@@ -389,17 +407,17 @@ Name: ${projectInfo.name}
 Description: ${projectInfo.desc}
 Tech Stack: ${projectInfo.tech.join(", ")}
 
-Chat history so far:
+Chat History:
 ${historyText}
 
 Latest Question Asked: ${question}
-Candidate's Latest Answer: ${answer}
+Candidate Answer: ${answer}
 
-Ask your next question — probe deeper into the candidate's technical decisions, architecture, or potential inconsistencies based on their last answer.
+Ask your next probing follow-up question in a natural, human voice.
 
 Return:
 {
-  "followUp": "Your follow up question text here."
+  "followUp": "Your human follow up question text here."
 }`;
 
   const res = await callAiWithFallback({
